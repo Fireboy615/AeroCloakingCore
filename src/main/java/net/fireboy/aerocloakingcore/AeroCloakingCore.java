@@ -32,16 +32,13 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 
 import net.fireboy.aerocloakingcore.block.ModBlocks;
 import net.fireboy.aerocloakingcore.block.entity.ModBlockEntities;
-import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
-import net.fireboy.aerocloakingcore.network.CloakingClient;
-import net.fireboy.aerocloakingcore.network.CloakingSyncPayload;
 
 // The value here should match an entry in the META-INF/neoforge.mods.toml file
 @Mod(AeroCloakingCore.MOD_ID)
 public class AeroCloakingCore {
 
     // Define mod id in a common place for everything to reference
-    public static final String MOD_ID = "aerocloackingcore";
+    public static final String MOD_ID = "aerocloakingcore";
 
     // Directly reference a slf4j logger
     public static final Logger LOGGER = LogUtils.getLogger();
@@ -87,7 +84,6 @@ public class AeroCloakingCore {
     public AeroCloakingCore(IEventBus modEventBus, ModContainer modContainer) {
         // Register the commonSetup method for modloading
         modEventBus.addListener(this::commonSetup);
-        modEventBus.addListener(this::registerPayloads);
 
         // Register the Deferred Register to the mod event bus so blocks get registered
         BLOCKS.register(modEventBus);
@@ -133,21 +129,6 @@ public class AeroCloakingCore {
             event.accept(EXAMPLE_BLOCK_ITEM);
             event.accept(CLOAKING_CORE_ITEM);
         }
-    }
-
-    private void registerPayloads(RegisterPayloadHandlersEvent event) {
-
-        event.registrar("1")
-                .playToClient(
-                        CloakingSyncPayload.TYPE,
-                        CloakingSyncPayload.STREAM_CODEC,
-                        (payload, context) -> {
-
-                            CloakingClient.setCloakedSubLevels(
-                                    payload.subLevels()
-                            );
-                        }
-                );
     }
 
     // You can use SubscribeEvent and let the Event Bus discover methods to call
