@@ -1,7 +1,9 @@
 {
-  "itemGroup.examplemod": "Example Mod Tab",
+  "itemGroup.examplemod": "Cloaking Core",
   "block.examplemod.example_block": "Example Block",
   "item.examplemod.example_item": "Example Item",
+
+  "block.aerocloakingcore.cloaking_core": "Cloaking Core",
 
   "examplemod.configuration.title": "Example Mod Configs",
   "examplemod.configuration.section.examplemod.common.toml": "Example Mod Configs",

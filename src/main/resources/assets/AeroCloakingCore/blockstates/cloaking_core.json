@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "aerocloakingcore:block/cloaking_core"
+    }
+  }
+}
