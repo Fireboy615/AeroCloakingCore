@@ -81,7 +81,7 @@ public abstract class FancySubLevelRenderDispatcherMixin {
                     ClientSubLevel candidate = original.next();
 
                     if (!CloakingClient.shouldHideSubLevel(
-                            candidate.getUniqueId()
+                            candidate
                     )) {
                         next = candidate;
                         prepared = true;

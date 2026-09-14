@@ -1,17 +1,21 @@
 {
-  "itemGroup.examplemod": "Cloaking Core",
-  "block.examplemod.example_block": "Example Block",
-  "item.examplemod.example_item": "Example Item",
-
   "block.aerocloakingcore.cloaking_core": "Cloaking Core",
-
   "aerocloakingcore.simulated_section.aerocloakingcore": "Aero Cloaking Core",
 
-  "examplemod.configuration.title": "Example Mod Configs",
-  "examplemod.configuration.section.examplemod.common.toml": "Example Mod Configs",
-  "examplemod.configuration.section.examplemod.common.toml.title": "Example Mod Configs",
-  "examplemod.configuration.items": "Item List",
-  "examplemod.configuration.logDirtBlock": "Log Dirt Block",
-  "examplemod.configuration.magicNumberIntroduction": "Magic Number Text",
-  "examplemod.configuration.magicNumber": "Magic Number"
+  "aerocloakingcore.configuration.title": "Aero Cloaking Core Config",
+  "aerocloakingcore.configuration.section.aerocloakingcore.client.toml": "Client Settings",
+  "aerocloakingcore.configuration.section.aerocloakingcore.client.toml.title": "Aero Cloaking Core Client Settings",
+
+  "aerocloakingcore.configuration.category.rendering": "Cloak Rendering",
+  "aerocloakingcore.configuration.renderMode": "Render Mode",
+  "aerocloakingcore.configuration.transitionDurationSeconds": "Transition Duration (seconds)",
+  "aerocloakingcore.configuration.transitionEasing": "Transition Easing",
+
+  "aerocloakingcore.configuration.category.viewerVisibility": "Viewer Visibility",
+  "aerocloakingcore.configuration.visibleWhileAboard": "Visible While Aboard",
+  "aerocloakingcore.configuration.leaveGraceSeconds": "Leave Grace Period (seconds)",
+  "aerocloakingcore.configuration.leaveFadeSeconds": "Leave Fade Duration (seconds)",
+  "aerocloakingcore.configuration.proximityRevealEnabled": "Proximity Reveal",
+  "aerocloakingcore.configuration.fullyVisibleDistance": "Fully Visible Distance (blocks)",
+  "aerocloakingcore.configuration.fullyCloakedDistance": "Fully Cloaked Distance (blocks)"
 }

@@ -1,0 +1,10 @@
+{
+  "target": [
+    "minecraft:shaders/core/rendertype_solid.fsh",
+    "minecraft:shaders/core/rendertype_cutout.fsh",
+    "minecraft:shaders/core/rendertype_cutout_mipped.fsh",
+    "minecraft:shaders/core/rendertype_translucent.fsh",
+    "minecraft:shaders/core/rendertype_tripwire.fsh"
+  ],
+  "redirect": "aerocloakingcore:cloak_dither.glsl"
+}

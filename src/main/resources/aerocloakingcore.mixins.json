@@ -5,6 +5,12 @@
   "compatibilityLevel": "JAVA_21",
   "client": [
     "client.VanillaSubLevelRenderDispatcherMixin",
-    "client.FancySubLevelRenderDispatcherMixin"
+    "client.FancySubLevelRenderDispatcherMixin",
+    "client.VanillaChunkedSubLevelRenderDataMixin",
+    "client.LevelRendererHitOutlineMixin",
+    "client.LevelRendererAlphaEntityMixin",
+    "client.EntityRenderDispatcherMixin",
+    "client.RenderTypeEntityCloakMixin",
+    "client.VertexBufferEntityDitherMixin"
   ]
 }
