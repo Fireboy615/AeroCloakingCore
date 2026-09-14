@@ -32,6 +32,7 @@
   "screen.aerocloakingcore.cloaking_core.cloaked_distance": "Cloaked: %s blocks",
   "screen.aerocloakingcore.cloaking_core.per_core_active": "Per-core visual override enabled",
   "screen.aerocloakingcore.cloaking_core.global_active": "Using global client visual settings",
-  "screen.aerocloakingcore.cloaking_core.redstone_hint": "Moving strength manually overrides Redstone Link until its next signal update",
-  "message.aerocloakingcore.manual_cloak": "Manual cloak override: %s%%"
+  "screen.aerocloakingcore.cloaking_core.redstone_hint": "Link signal 0-15 controls cloak strength; manual input overrides until the signal changes",
+  "message.aerocloakingcore.manual_cloak": "Manual cloak override: %s%%",
+  "screen.aerocloakingcore.cloaking_core.link_frequency": "Redstone Link Frequency"
 }

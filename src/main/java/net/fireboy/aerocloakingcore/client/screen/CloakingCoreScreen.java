@@ -3,6 +3,7 @@ package net.fireboy.aerocloakingcore.client.screen;
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.cloak.CloakingCoreSettings;
 import net.fireboy.aerocloakingcore.menu.CloakingCoreMenu;
+import net.fireboy.aerocloakingcore.network.UpdateCloakingCoreLinkFrequencyPayload;
 import net.fireboy.aerocloakingcore.network.UpdateCloakingCoreSettingsPayload;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractSliderButton;
@@ -13,6 +14,8 @@ import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.ItemStack;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.util.function.DoubleConsumer;
@@ -24,13 +27,8 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
     private CloakRenderMode renderMode;
 
     private ValueSlider strengthSlider;
-    private boolean draggingStrengthSlider = false;
-
-    /**
-     * Changing render mode alone must not take control away from Redstone Link.
-     * The strength slider only becomes a manual override after the user moves it.
-     */
-    private boolean strengthDirty = false;
+    private boolean draggingStrengthSlider;
+    private boolean strengthDirty;
 
     public CloakingCoreScreen(
             CloakingCoreMenu menu,
@@ -40,7 +38,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         super(menu, playerInventory, title);
 
         imageWidth = 300;
-        imageHeight = 150;
+        imageHeight = 235;
 
         CloakingCoreSettings settings = menu.getInitialSettings();
         cloakStrength = settings.cloakStrength();
@@ -58,7 +56,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
 
         strengthSlider = new ValueSlider(
                 x,
-                topPos + 38,
+                topPos + 32,
                 width,
                 20,
                 0.0,
@@ -82,7 +80,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                         .withInitialValue(renderMode)
                         .create(
                                 x,
-                                topPos + 68,
+                                topPos + 60,
                                 width,
                                 20,
                                 Component.translatable(
@@ -97,7 +95,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                                 CommonComponents.GUI_DONE,
                                 button -> saveAndClose()
                         )
-                        .bounds(x, topPos + 112, halfWidth, 20)
+                        .bounds(x, topPos + 122, halfWidth, 20)
                         .build()
         );
 
@@ -106,11 +104,10 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                                 CommonComponents.GUI_CANCEL,
                                 button -> onClose()
                         )
-                        .bounds(rightX, topPos + 112, halfWidth, 20)
+                        .bounds(rightX, topPos + 122, halfWidth, 20)
                         .build()
         );
     }
-
 
     @Override
     public boolean mouseClicked(
@@ -118,6 +115,33 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
             double mouseY,
             int button
     ) {
+        Slot hovered = getSlotUnderMouse();
+
+        if (hovered instanceof CloakingCoreMenu.FrequencySlot frequencySlot
+                && (button == 0 || button == 1)) {
+
+            ItemStack frequency;
+
+            if (button == 1 || menu.getCarried().isEmpty()) {
+                frequency = ItemStack.EMPTY;
+            } else {
+                frequency = menu.getCarried().copyWithCount(1);
+            }
+
+            // Immediate client visual feedback. The server remains authoritative.
+            frequencySlot.set(frequency.copy());
+
+            PacketDistributor.sendToServer(
+                    new UpdateCloakingCoreLinkFrequencyPayload(
+                            menu.containerId,
+                            frequencySlot.isFirst(),
+                            frequency
+                    )
+            );
+
+            return true;
+        }
+
         if (button == 0
                 && strengthSlider != null
                 && strengthSlider.isMouseOver(mouseX, mouseY)) {
@@ -198,11 +222,30 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         guiGraphics.drawCenteredString(
                 font,
                 Component.translatable(
+                        "screen.aerocloakingcore.cloaking_core.link_frequency"
+                ),
+                imageWidth / 2,
+                85,
+                0xD0D0D0
+        );
+
+        guiGraphics.drawCenteredString(
+                font,
+                Component.translatable(
                         "screen.aerocloakingcore.cloaking_core.redstone_hint"
                 ),
                 imageWidth / 2,
-                94,
+                116,
                 0xA0A0A0
+        );
+
+        guiGraphics.drawString(
+                font,
+                Component.translatable("container.inventory"),
+                69,
+                141,
+                0xA0A0A0,
+                false
         );
     }
 
@@ -227,6 +270,52 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 leftPos + imageWidth,
                 topPos + imageHeight,
                 0xE0101010
+        );
+
+        // Frequency slot frames.
+        drawSlotFrame(guiGraphics, 127, 96);
+        drawSlotFrame(guiGraphics, 157, 96);
+
+        // Player inventory slot frames.
+        int inventoryX = 69;
+        int inventoryY = 151;
+
+        for (int row = 0; row < 3; row++) {
+            for (int column = 0; column < 9; column++) {
+                drawSlotFrame(
+                        guiGraphics,
+                        inventoryX + column * 18,
+                        inventoryY + row * 18
+                );
+            }
+        }
+
+        for (int column = 0; column < 9; column++) {
+            drawSlotFrame(
+                    guiGraphics,
+                    inventoryX + column * 18,
+                    209
+            );
+        }
+    }
+
+    private void drawSlotFrame(GuiGraphics guiGraphics, int x, int y) {
+        int screenX = leftPos + x;
+        int screenY = topPos + y;
+
+        guiGraphics.fill(
+                screenX - 1,
+                screenY - 1,
+                screenX + 17,
+                screenY + 17,
+                0xFF5A5A5A
+        );
+        guiGraphics.fill(
+                screenX,
+                screenY,
+                screenX + 16,
+                screenY + 16,
+                0xFF151515
         );
     }
 

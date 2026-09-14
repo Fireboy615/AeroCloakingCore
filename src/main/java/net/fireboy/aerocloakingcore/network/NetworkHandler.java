@@ -15,7 +15,7 @@ public final class NetworkHandler {
 
     @SubscribeEvent
     public static void register(RegisterPayloadHandlersEvent event) {
-        var registrar = event.registrar("3");
+        var registrar = event.registrar("4");
 
         registrar.playToClient(
                 CloakingSyncPayload.TYPE,
@@ -47,6 +47,30 @@ public final class NetworkHandler {
                             payload.updateStrength(),
                             payload.cloakStrength(),
                             payload.renderMode()
+                    );
+                }
+        );
+
+        registrar.playToServer(
+                UpdateCloakingCoreLinkFrequencyPayload.TYPE,
+                UpdateCloakingCoreLinkFrequencyPayload.STREAM_CODEC,
+                (payload, context) -> {
+                    if (!(context.player() instanceof ServerPlayer player)) {
+                        return;
+                    }
+
+                    if (!(player.containerMenu instanceof CloakingCoreMenu menu)) {
+                        return;
+                    }
+
+                    if (menu.containerId != payload.containerId()) {
+                        return;
+                    }
+
+                    menu.applyFrequency(
+                            player,
+                            payload.first(),
+                            payload.frequency()
                     );
                 }
         );

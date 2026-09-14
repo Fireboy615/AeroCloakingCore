@@ -8,6 +8,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.BaseEntityBlock;
 import net.minecraft.world.level.block.RenderShape;
@@ -50,8 +51,6 @@ public class CloakingCoreBlock extends BaseEntityBlock {
             return InteractionResult.PASS;
         }
 
-        // Shift-right-click = immediate binary manual override.
-        // The next Redstone Link signal update will automatically retake control.
         if (player.isShiftKeyDown()) {
             float strength = core.toggleManualCloak();
 
@@ -66,11 +65,20 @@ public class CloakingCoreBlock extends BaseEntityBlock {
             return InteractionResult.SUCCESS;
         }
 
-        // Normal right-click opens the per-core UI.
         if (player instanceof ServerPlayer serverPlayer) {
             serverPlayer.openMenu(
                     core,
-                    buffer -> core.getSettings().write(buffer)
+                    buffer -> {
+                        core.getSettings().write(buffer);
+                        ItemStack.OPTIONAL_STREAM_CODEC.encode(
+                                buffer,
+                                core.getLinkFrequency(true)
+                        );
+                        ItemStack.OPTIONAL_STREAM_CODEC.encode(
+                                buffer,
+                                core.getLinkFrequency(false)
+                        );
+                    }
             );
         }
 
@@ -78,10 +86,7 @@ public class CloakingCoreBlock extends BaseEntityBlock {
     }
 
     @Override
-    public BlockEntity newBlockEntity(
-            BlockPos pos,
-            BlockState state
-    ) {
+    public BlockEntity newBlockEntity(BlockPos pos, BlockState state) {
         return new CloakingCoreBlockEntity(pos, state);
     }
 
