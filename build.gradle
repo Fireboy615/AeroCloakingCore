@@ -59,7 +59,8 @@ repositories {
     }
 
     maven {
-        url = 'https://maven.ryanhcode.dev/releases'
+        name = "RyanHCode Maven"
+        url = "https://maven.ryanhcode.dev/releases"
     }
 }
 

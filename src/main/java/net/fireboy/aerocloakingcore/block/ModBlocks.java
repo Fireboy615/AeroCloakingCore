@@ -4,6 +4,8 @@ import net.fireboy.aerocloakingcore.AeroCloakingCore;
 import net.neoforged.neoforge.registries.DeferredBlock;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
+import net.minecraft.world.level.block.state.BlockBehaviour;
+
 public class ModBlocks {
 
     public static final DeferredRegister.Blocks BLOCKS =
@@ -13,7 +15,7 @@ public class ModBlocks {
             BLOCKS.register(
                     "cloaking_core",
                     () -> new CloakingCoreBlock(
-                            net.minecraft.world.level.block.state.BlockBehaviour.Properties.of()
+                            BlockBehaviour.Properties.of()
                                     .strength(3.0F)
                                     .requiresCorrectToolForDrops()
                     )

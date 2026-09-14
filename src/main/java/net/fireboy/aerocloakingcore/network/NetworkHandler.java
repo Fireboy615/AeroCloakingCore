@@ -4,8 +4,10 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 
+import net.fireboy.aerocloakingcore.AeroCloakingCore;
+
 @EventBusSubscriber(
-        modid = "aerocloakingcore"
+        modid = AeroCloakingCore.MOD_ID
 )
 public final class NetworkHandler {
 

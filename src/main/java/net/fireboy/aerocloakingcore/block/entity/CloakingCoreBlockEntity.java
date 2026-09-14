@@ -10,7 +10,13 @@ import net.minecraft.world.level.block.state.BlockState;
 import java.util.Objects;
 import java.util.UUID;
 
+import net.fireboy.aerocloakingcore.AeroCloakingCore;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.nbt.CompoundTag;
+
 public class CloakingCoreBlockEntity extends BlockEntity {
+
+    private static final String TAG_ACTIVE = "Active";
 
     private boolean active = false;
 
@@ -25,6 +31,35 @@ public class CloakingCoreBlockEntity extends BlockEntity {
 
     public boolean isActive() {
         return active;
+    }
+
+    @Override
+    protected void saveAdditional(
+            CompoundTag tag,
+            HolderLookup.Provider registries
+    ) {
+        super.saveAdditional(tag, registries);
+
+        // Save whether the Cloaking Core is currently enabled.
+        tag.putBoolean(TAG_ACTIVE, active);
+    }
+
+    @Override
+    protected void loadAdditional(
+            CompoundTag tag,
+            HolderLookup.Provider registries
+    ) {
+        super.loadAdditional(tag, registries);
+
+        // Restore the saved ON/OFF state.
+        active = tag.getBoolean(TAG_ACTIVE);
+
+        // Runtime state is rediscovered after the world loads.
+        cloakedSubLevelId = null;
+
+        // If the core was active, make it check for its sublevel
+        // almost immediately on the server.
+        checkTimer = active ? 19 : 0;
     }
 
     public void toggle() {
@@ -86,15 +121,15 @@ public class CloakingCoreBlockEntity extends BlockEntity {
                     cloakedSubLevelId
             );
 
-            System.out.println(
-                    "[Aero Cloaking Core] Found Sable sub-level: "
-                            + cloakedSubLevelId
+            AeroCloakingCore.LOGGER.debug(
+                    "Cloaking Core found Sable sub-level: {}",
+                    cloakedSubLevelId
             );
 
         } else {
 
-            System.out.println(
-                    "[Aero Cloaking Core] No Sable sub-level found."
+            AeroCloakingCore.LOGGER.debug(
+                    "Cloaking Core is not currently on a Sable sub-level"
             );
         }
     }

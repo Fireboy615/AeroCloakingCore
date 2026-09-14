@@ -16,6 +16,7 @@ import net.minecraft.world.phys.BlockHitResult;
 import org.jetbrains.annotations.Nullable;
 
 import com.mojang.serialization.MapCodec;
+import net.minecraft.world.level.block.RenderShape;
 
 public class CloakingCoreBlock extends BaseEntityBlock {
 
@@ -86,5 +87,10 @@ public class CloakingCoreBlock extends BaseEntityBlock {
         }
 
         return null;
+    }
+
+    @Override
+    protected RenderShape getRenderShape(BlockState state) {
+        return RenderShape.MODEL;
     }
 }

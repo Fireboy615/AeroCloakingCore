@@ -13,8 +13,10 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
+import net.fireboy.aerocloakingcore.AeroCloakingCore;
+
 @EventBusSubscriber(
-        modid = "aerocloackingcore"
+        modid = AeroCloakingCore.MOD_ID
 )
 public final class CloakingManager {
 

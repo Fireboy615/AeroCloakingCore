@@ -1,0 +1,13 @@
+{
+  "priority": 1100,
+  "title": {
+    "text": {
+      "translate": "aerocloakingcore.simulated_section.aerocloakingcore"
+    },
+    "background": "#bb1c2a33",
+    "color": "#ffd8e4ec",
+    "secondary_color": "#ff7f9aad"
+  },
+  "sprite": "aerocloakingcore:banner",
+  "only_animate_on_hover": true
+}

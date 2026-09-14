@@ -6,8 +6,10 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.RenderPlayerEvent;
 
+import net.fireboy.aerocloakingcore.AeroCloakingCore;
+
 @EventBusSubscriber(
-        modid = "aerocloackingcore",
+        modid = AeroCloakingCore.MOD_ID,
         value = net.neoforged.api.distmarker.Dist.CLIENT,
         bus = EventBusSubscriber.Bus.GAME
 )
