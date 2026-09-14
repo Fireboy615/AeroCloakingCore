@@ -9,15 +9,34 @@ public final class EntityCloakRenderState {
     private static final ThreadLocal<Float> ACTIVE_CLOAK_STRENGTH =
             ThreadLocal.withInitial(() -> 0.0F);
 
+    private static final ThreadLocal<CloakRenderMode> ACTIVE_RENDER_MODE =
+            ThreadLocal.withInitial(() -> CloakRenderMode.DITHER);
+
     private EntityCloakRenderState() {
     }
 
-    public static void begin(float cloakStrength) {
+    public static void begin(
+            float cloakStrength,
+            CloakRenderMode renderMode
+    ) {
         ACTIVE_CLOAK_STRENGTH.set(clamp(cloakStrength));
+        ACTIVE_RENDER_MODE.set(
+                renderMode != null
+                        ? renderMode
+                        : CloakRenderMode.DITHER
+        );
+    }
+
+    /**
+     * Retained as a safe fallback for any older call sites.
+     */
+    public static void begin(float cloakStrength) {
+        begin(cloakStrength, CloakRenderMode.DITHER);
     }
 
     public static void end() {
         ACTIVE_CLOAK_STRENGTH.set(0.0F);
+        ACTIVE_RENDER_MODE.set(CloakRenderMode.DITHER);
     }
 
     public static float getCloakStrength() {
@@ -26,6 +45,10 @@ public final class EntityCloakRenderState {
 
     public static float getAlpha() {
         return 1.0F - getCloakStrength();
+    }
+
+    public static CloakRenderMode getRenderMode() {
+        return ACTIVE_RENDER_MODE.get();
     }
 
     public static boolean isActive() {

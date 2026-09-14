@@ -1,21 +1,37 @@
 {
   "block.aerocloakingcore.cloaking_core": "Cloaking Core",
   "aerocloakingcore.simulated_section.aerocloakingcore": "Aero Cloaking Core",
-
   "aerocloakingcore.configuration.title": "Aero Cloaking Core Config",
   "aerocloakingcore.configuration.section.aerocloakingcore.client.toml": "Client Settings",
   "aerocloakingcore.configuration.section.aerocloakingcore.client.toml.title": "Aero Cloaking Core Client Settings",
-
   "aerocloakingcore.configuration.category.rendering": "Cloak Rendering",
   "aerocloakingcore.configuration.renderMode": "Render Mode",
   "aerocloakingcore.configuration.transitionDurationSeconds": "Transition Duration (seconds)",
   "aerocloakingcore.configuration.transitionEasing": "Transition Easing",
-
   "aerocloakingcore.configuration.category.viewerVisibility": "Viewer Visibility",
   "aerocloakingcore.configuration.visibleWhileAboard": "Visible While Aboard",
   "aerocloakingcore.configuration.leaveGraceSeconds": "Leave Grace Period (seconds)",
   "aerocloakingcore.configuration.leaveFadeSeconds": "Leave Fade Duration (seconds)",
   "aerocloakingcore.configuration.proximityRevealEnabled": "Proximity Reveal",
   "aerocloakingcore.configuration.fullyVisibleDistance": "Fully Visible Distance (blocks)",
-  "aerocloakingcore.configuration.fullyCloakedDistance": "Fully Cloaked Distance (blocks)"
+  "aerocloakingcore.configuration.fullyCloakedDistance": "Fully Cloaked Distance (blocks)",
+  "screen.aerocloakingcore.cloaking_core.title": "Cloaking Core",
+  "screen.aerocloakingcore.cloaking_core.enabled": "Enabled",
+  "screen.aerocloakingcore.cloaking_core.strength": "Cloak Strength: %s%%",
+  "screen.aerocloakingcore.cloaking_core.override_visuals": "Override Global Visual Settings",
+  "screen.aerocloakingcore.cloaking_core.tab.general": "General",
+  "screen.aerocloakingcore.cloaking_core.tab.viewer": "Viewer Reveal",
+  "screen.aerocloakingcore.cloaking_core.render_mode": "Render Mode",
+  "screen.aerocloakingcore.cloaking_core.transition": "Transition: %ss",
+  "screen.aerocloakingcore.cloaking_core.easing": "Easing",
+  "screen.aerocloakingcore.cloaking_core.visible_aboard": "Visible While Aboard",
+  "screen.aerocloakingcore.cloaking_core.proximity": "Proximity Reveal",
+  "screen.aerocloakingcore.cloaking_core.leave_grace": "Leave Grace: %ss",
+  "screen.aerocloakingcore.cloaking_core.leave_fade": "Leave Fade: %ss",
+  "screen.aerocloakingcore.cloaking_core.visible_distance": "Visible: %s blocks",
+  "screen.aerocloakingcore.cloaking_core.cloaked_distance": "Cloaked: %s blocks",
+  "screen.aerocloakingcore.cloaking_core.per_core_active": "Per-core visual override enabled",
+  "screen.aerocloakingcore.cloaking_core.global_active": "Using global client visual settings",
+  "screen.aerocloakingcore.cloaking_core.redstone_hint": "Moving strength manually overrides Redstone Link until its next signal update",
+  "message.aerocloakingcore.manual_cloak": "Manual cloak override: %s%%"
 }

@@ -5,8 +5,9 @@ import org.slf4j.Logger;
 
 import net.fireboy.aerocloakingcore.block.ModBlocks;
 import net.fireboy.aerocloakingcore.block.entity.ModBlockEntities;
-import net.fireboy.aerocloakingcore.client.config.AeroCloakingCoreClientConfig;
+import net.fireboy.aerocloakingcore.server.config.AeroCloakingCoreServerConfig;
 import net.fireboy.aerocloakingcore.item.ModItems;
+import net.fireboy.aerocloakingcore.menu.ModMenus;
 
 import net.minecraft.resources.ResourceLocation;
 
@@ -38,11 +39,12 @@ public class AeroCloakingCore {
         ModBlocks.BLOCKS.register(modEventBus);
         ModBlockEntities.BLOCK_ENTITIES.register(modEventBus);
         ModItems.ITEMS.register(modEventBus);
+        ModMenus.MENUS.register(modEventBus);
 
-        // Global client-side visual defaults.
+        // Server-authoritative cloak behaviour and reveal distances.
         modContainer.registerConfig(
-                ModConfig.Type.CLIENT,
-                AeroCloakingCoreClientConfig.SPEC
+                ModConfig.Type.SERVER,
+                AeroCloakingCoreServerConfig.SPEC
         );
 
         LOGGER.info("Loading Aero Cloaking Core");

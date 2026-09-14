@@ -2,6 +2,7 @@ package net.fireboy.aerocloakingcore.mixin.client;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 
+import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.client.EntityCloakRenderState;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
@@ -17,11 +18,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 
 /**
- * Gives entities the same viewer-specific cloak strength as the Sable
- * sublevel they belong to.
- *
- * The actual partial-cloak effect is selected later at RenderType draw time:
- * DITHER uses the cloak shader uniform, while ALPHA uses temporary blending.
+ * Gives entities the same viewer-specific cloak strength and render mode
+ * as the Sable sublevel they belong to.
  */
 @Mixin(EntityRenderDispatcher.class)
 public abstract class EntityRenderDispatcherMixin {
@@ -53,26 +51,32 @@ public abstract class EntityRenderDispatcherMixin {
         float cloakStrength =
                 CloakingClient.getEntityViewerCloakStrength(entity);
 
-        // Fully visible: leave normal entity rendering completely alone.
+        // Fully visible: normal entity rendering.
         if (cloakStrength <= 0.001F) {
             return;
         }
 
-        // Fully cloaked: do not submit any entity geometry at all.
+        // Fully cloaked: submit no entity geometry.
         if (cloakStrength >= 0.999F) {
             ci.cancel();
             return;
         }
 
+        CloakRenderMode renderMode =
+                CloakingClient.getEntityRenderMode(entity);
+
         /*
-         * LevelRenderer normally shares one BufferSource across many entities.
-         * Flush anything already queued before enabling our per-entity state,
-         * otherwise another entity could accidentally inherit this cloak value.
+         * Flush anything already queued before enabling this entity's
+         * per-core cloak state. Otherwise another entity could inherit it.
          */
         if (buffer instanceof MultiBufferSource.BufferSource bufferSource) {
             bufferSource.endBatch();
 
-            EntityCloakRenderState.begin(cloakStrength);
+            EntityCloakRenderState.begin(
+                    cloakStrength,
+                    renderMode
+            );
+
             aerocloakingcore$entityCloakActive = true;
         }
     }
@@ -100,11 +104,6 @@ public abstract class EntityRenderDispatcherMixin {
         }
 
         try {
-            /*
-             * Flush this entity while its cloak state is still active.
-             * That covers the model and common render layers/equipment that
-             * use the same BufferSource.
-             */
             if (buffer instanceof MultiBufferSource.BufferSource bufferSource) {
                 bufferSource.endBatch();
             }

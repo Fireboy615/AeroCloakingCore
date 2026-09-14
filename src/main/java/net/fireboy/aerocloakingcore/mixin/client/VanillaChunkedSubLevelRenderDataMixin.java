@@ -6,7 +6,6 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
-import net.fireboy.aerocloakingcore.client.config.AeroCloakingCoreClientConfig;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.renderer.RenderType;
@@ -77,7 +76,7 @@ public abstract class VanillaChunkedSubLevelRenderDataMixin {
                 );
 
         CloakRenderMode renderMode =
-                AeroCloakingCoreClientConfig.RENDER_MODE.get();
+                CloakingClient.getRenderMode(subLevel);
 
         if (renderMode == CloakRenderMode.DITHER) {
 

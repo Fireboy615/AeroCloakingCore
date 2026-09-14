@@ -6,7 +6,9 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 
 import net.fireboy.aerocloakingcore.client.CloakEasing;
-import net.fireboy.aerocloakingcore.client.config.AeroCloakingCoreClientConfig;
+import net.fireboy.aerocloakingcore.client.CloakRenderMode;
+import net.fireboy.aerocloakingcore.cloak.CloakingCoreSettings;
+import net.fireboy.aerocloakingcore.cloak.CloakingServerSettings;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.Entity;
@@ -24,6 +26,18 @@ public final class CloakingClient {
 
     private static final float FULL_CLOAK_THRESHOLD = 0.999F;
 
+    /** Per-sublevel settings sent by the server. */
+    private static final Map<UUID, CloakingCoreSettings> CORE_SETTINGS =
+            new ConcurrentHashMap<>();
+
+    /** Server-authoritative fade/reveal configuration. */
+    private static volatile CloakingServerSettings SERVER_SETTINGS =
+            CloakingServerSettings.DEFAULT;
+
+    /** Sublevels present in the most recent server sync. */
+    private static final Set<UUID> SERVER_SUBLEVELS =
+            ConcurrentHashMap.newKeySet();
+
     /** The sublevel the local player was aboard/tracking on the previous render check. */
     private static UUID lastViewerSubLevelId = null;
 
@@ -38,15 +52,33 @@ public final class CloakingClient {
     private CloakingClient() {
     }
 
+    public static void setCloakStates(
+            List<CloakingSyncPayload.Entry> entries,
+            CloakingServerSettings serverSettings
+    ) {
+        SERVER_SETTINGS = serverSettings != null
+                ? serverSettings.normalized()
+                : CloakingServerSettings.DEFAULT;
 
-    public static void setCloakedSubLevels(List<UUID> ids) {
-
-        Set<UUID> incoming = new HashSet<>(ids);
+        Set<UUID> incoming = new HashSet<>();
         Set<UUID> known = new HashSet<>(TRANSITIONS.keySet());
+        known.addAll(CORE_SETTINGS.keySet());
 
-        for (UUID id : incoming) {
-            setTargetStrength(id, 1.0F);
+        for (CloakingSyncPayload.Entry entry : entries) {
+            UUID id = entry.subLevelId();
+            CloakingCoreSettings settings = entry.settings().normalized();
+
+            incoming.add(id);
+            CORE_SETTINGS.put(id, settings);
+
+            setTargetStrength(
+                    id,
+                    settings.cloakStrength()
+            );
         }
+
+        SERVER_SUBLEVELS.clear();
+        SERVER_SUBLEVELS.addAll(incoming);
 
         for (UUID id : known) {
             if (!incoming.contains(id)) {
@@ -55,18 +87,23 @@ public final class CloakingClient {
         }
     }
 
+    /** Backwards-friendly helper used by older call sites if any remain. */
+    public static void setCloakedSubLevels(List<UUID> ids) {
+        setCloakStates(
+                ids.stream()
+                        .map(id -> new CloakingSyncPayload.Entry(
+                                id,
+                                CloakingCoreSettings.DEFAULT.withCloakStrength(1.0F)
+                        ))
+                        .toList(),
+                SERVER_SETTINGS
+        );
+    }
 
-    /**
-     * Sets the server-requested cloak strength.
-     *
-     * This already supports arbitrary 0..1 values for future UI and
-     * Redstone Link control.
-     */
     public static void setTargetStrength(
             UUID subLevelId,
             float targetStrength
     ) {
-
         targetStrength = clamp(targetStrength);
 
         long now = System.nanoTime();
@@ -93,15 +130,13 @@ public final class CloakingClient {
                         currentStrength,
                         targetStrength,
                         now,
-                        getTransitionDurationSeconds(),
-                        getTransitionEasing()
+                        getTransitionDurationSeconds(subLevelId),
+                        getTransitionEasing(subLevelId)
                 )
         );
     }
 
-
     public static float getCloakStrength(UUID subLevelId) {
-
         CloakTransition transition = TRANSITIONS.get(subLevelId);
 
         if (transition == null) {
@@ -113,30 +148,57 @@ public final class CloakingClient {
 
         if (transition.targetStrength <= 0.0F
                 && transition.isFinished(now)) {
-
             TRANSITIONS.remove(subLevelId, transition);
+
+            // If the server no longer has a state for this sublevel, a future
+            // sync will not reference it. Keeping stale visual overrides around
+            // is unnecessary once the fade-out has completed.
+            if (!SERVER_SUBLEVELS.contains(subLevelId)) {
+                CORE_SETTINGS.remove(subLevelId);
+            }
+
             return 0.0F;
         }
 
         return strength;
     }
 
+    public static CloakRenderMode getRenderMode(UUID subLevelId) {
+        CloakingCoreSettings settings = CORE_SETTINGS.get(subLevelId);
 
-    /**
-     * Viewer-specific strength when only a UUID is available.
-     *
-     * This can account for whether the viewer is aboard, but distance
-     * reveal needs the ClientSubLevel overload below so its bounds are known.
-     */
+        return settings != null
+                ? settings.renderMode()
+                : CloakRenderMode.DITHER;
+    }
+
+    public static CloakRenderMode getRenderMode(ClientSubLevel subLevel) {
+        return getRenderMode(subLevel.getUniqueId());
+    }
+
+    public static CloakRenderMode getEntityRenderMode(Entity entity) {
+        ClientSubLevel subLevel = getEntityClientSubLevel(entity);
+
+        return subLevel != null
+                ? getRenderMode(subLevel)
+                : CloakRenderMode.DITHER;
+    }
+
+    public static float getTransitionDurationSeconds(UUID subLevelId) {
+        return SERVER_SETTINGS.transitionDurationSeconds();
+    }
+
+    public static CloakEasing getTransitionEasing(UUID subLevelId) {
+        return SERVER_SETTINGS.transitionEasing();
+    }
+
     public static float getViewerCloakStrength(UUID subLevelId) {
-
         float strength = getCloakStrength(subLevelId);
 
         if (strength <= 0.0F) {
             return 0.0F;
         }
 
-        if (!AeroCloakingCoreClientConfig.VISIBLE_WHILE_ABOARD.get()) {
+        if (!visibleWhileAboard(subLevelId)) {
             return strength;
         }
 
@@ -150,12 +212,7 @@ public final class CloakingClient {
         return strength;
     }
 
-
-    /**
-     * Full viewer-specific cloak strength used for rendering a client sublevel.
-     */
     public static float getViewerCloakStrength(ClientSubLevel subLevel) {
-
         UUID subLevelId = subLevel.getUniqueId();
         float baseStrength = getCloakStrength(subLevelId);
 
@@ -168,7 +225,7 @@ public final class CloakingClient {
 
         updateViewerLeaveState(viewerSubLevel, now);
 
-        if (AeroCloakingCoreClientConfig.VISIBLE_WHILE_ABOARD.get()
+        if (visibleWhileAboard(subLevelId)
                 && viewerSubLevel != null
                 && subLevelId.equals(viewerSubLevel.getUniqueId())) {
             return 0.0F;
@@ -184,12 +241,10 @@ public final class CloakingClient {
         );
     }
 
-
     private static void updateViewerLeaveState(
             SubLevel viewerSubLevel,
             long now
     ) {
-
         UUID currentViewerSubLevelId =
                 viewerSubLevel != null
                         ? viewerSubLevel.getUniqueId()
@@ -213,27 +268,18 @@ public final class CloakingClient {
         lastViewerSubLevelId = currentViewerSubLevelId;
     }
 
-
     private static float getPostLeaveCloakStrength(
             UUID subLevelId,
             long now
     ) {
-
         Long leftAt = VIEWER_LEFT_AT.get(subLevelId);
 
         if (leftAt == null) {
             return 1.0F;
         }
 
-        float graceSeconds =
-                AeroCloakingCoreClientConfig.LEAVE_GRACE_SECONDS
-                        .get()
-                        .floatValue();
-
-        float fadeSeconds =
-                AeroCloakingCoreClientConfig.LEAVE_FADE_SECONDS
-                        .get()
-                        .floatValue();
+        float graceSeconds = leaveGraceSeconds(subLevelId);
+        float fadeSeconds = leaveFadeSeconds(subLevelId);
 
         float secondsSinceLeave =
                 (now - leftAt) / 1_000_000_000.0F;
@@ -257,16 +303,15 @@ public final class CloakingClient {
         }
 
         progress = clamp(progress);
-
         return progress * progress * (3.0F - 2.0F * progress);
     }
-
 
     private static float getDistanceCloakStrength(
             ClientSubLevel subLevel
     ) {
+        UUID subLevelId = subLevel.getUniqueId();
 
-        if (!AeroCloakingCoreClientConfig.PROXIMITY_REVEAL_ENABLED.get()) {
+        if (!proximityRevealEnabled(subLevelId)) {
             return 1.0F;
         }
 
@@ -276,11 +321,8 @@ public final class CloakingClient {
             return 1.0F;
         }
 
-        double fullyVisibleDistance =
-                AeroCloakingCoreClientConfig.FULLY_VISIBLE_DISTANCE.get();
-
-        double fullyCloakedDistance =
-                AeroCloakingCoreClientConfig.FULLY_CLOAKED_DISTANCE.get();
+        double fullyVisibleDistance = fullyVisibleDistance(subLevelId);
+        double fullyCloakedDistance = fullyCloakedDistance(subLevelId);
 
         BoundingBox3dc bounds = subLevel.boundingBox();
 
@@ -324,17 +366,38 @@ public final class CloakingClient {
         );
 
         progress = clamp(progress);
-
         return progress * progress * (3.0F - 2.0F * progress);
     }
 
+    private static boolean visibleWhileAboard(UUID subLevelId) {
+        return SERVER_SETTINGS.visibleWhileAboard();
+    }
+
+    private static float leaveGraceSeconds(UUID subLevelId) {
+        return SERVER_SETTINGS.leaveGraceSeconds();
+    }
+
+    private static float leaveFadeSeconds(UUID subLevelId) {
+        return SERVER_SETTINGS.leaveFadeSeconds();
+    }
+
+    private static boolean proximityRevealEnabled(UUID subLevelId) {
+        return SERVER_SETTINGS.proximityRevealEnabled();
+    }
+
+    private static double fullyVisibleDistance(UUID subLevelId) {
+        return SERVER_SETTINGS.fullyVisibleDistance();
+    }
+
+    private static double fullyCloakedDistance(UUID subLevelId) {
+        return SERVER_SETTINGS.fullyCloakedDistance();
+    }
 
     private static double axisDistance(
             double value,
             double min,
             double max
     ) {
-
         if (value < min) {
             return min - value;
         }
@@ -346,7 +409,6 @@ public final class CloakingClient {
         return 0.0;
     }
 
-
     public static float getRenderAlpha(UUID subLevelId) {
         return 1.0F - getViewerCloakStrength(subLevelId);
     }
@@ -354,7 +416,6 @@ public final class CloakingClient {
     public static float getRenderAlpha(ClientSubLevel subLevel) {
         return 1.0F - getViewerCloakStrength(subLevel);
     }
-
 
     public static boolean shouldHideSubLevel(UUID subLevelId) {
         return getViewerCloakStrength(subLevelId)
@@ -366,14 +427,11 @@ public final class CloakingClient {
                 >= FULL_CLOAK_THRESHOLD;
     }
 
-
     public static boolean isCloaked(UUID subLevelId) {
         return getCloakStrength(subLevelId) > 0.0F;
     }
 
-
     public static SubLevel getViewerSubLevel() {
-
         Minecraft minecraft = Minecraft.getInstance();
 
         if (minecraft.player == null) {
@@ -385,16 +443,7 @@ public final class CloakingClient {
         );
     }
 
-
-    /**
-     * Finds the client sublevel an entity belongs to.
-     *
-     * getContaining() catches entities retained inside the sublevel plot.
-     * getTrackingOrVehicleSubLevel() catches players/mobs standing on or
-     * riding the moving sublevel.
-     */
     public static ClientSubLevel getEntityClientSubLevel(Entity entity) {
-
         SubLevel subLevel = Sable.HELPER.getContaining(entity);
 
         if (!(subLevel instanceof ClientSubLevel)) {
@@ -406,18 +455,7 @@ public final class CloakingClient {
                 : null;
     }
 
-
-    /**
-     * Uses the exact same viewer-specific cloak strength as the sublevel
-     * geometry, including:
-     *
-     * - visible while aboard
-     * - leave grace period
-     * - leave fade period
-     * - proximity reveal distance
-     */
     public static float getEntityViewerCloakStrength(Entity entity) {
-
         ClientSubLevel subLevel = getEntityClientSubLevel(entity);
 
         if (subLevel == null) {
@@ -427,33 +465,28 @@ public final class CloakingClient {
         return getViewerCloakStrength(subLevel);
     }
 
-
     public static boolean shouldHideEntity(Entity entity) {
         return getEntityViewerCloakStrength(entity)
                 >= FULL_CLOAK_THRESHOLD;
     }
 
-
     public static boolean shouldHidePlayer(Player target) {
         return shouldHideEntity(target);
     }
 
-
+    /** Global fallback accessor retained for older code paths. */
     public static float getTransitionDurationSeconds() {
-        return AeroCloakingCoreClientConfig.TRANSITION_DURATION_SECONDS
-                .get()
-                .floatValue();
+        return SERVER_SETTINGS.transitionDurationSeconds();
     }
 
+    /** Global fallback accessor retained for older code paths. */
     public static CloakEasing getTransitionEasing() {
-        return AeroCloakingCoreClientConfig.TRANSITION_EASING.get();
+        return SERVER_SETTINGS.transitionEasing();
     }
-
 
     private static float clamp(float value) {
         return Math.max(0.0F, Math.min(1.0F, value));
     }
-
 
     private static final class CloakTransition {
 
@@ -480,7 +513,6 @@ public final class CloakingClient {
         }
 
         private float getStrength(long now) {
-
             if (durationNanos <= 0L) {
                 return targetStrength;
             }
@@ -490,7 +522,6 @@ public final class CloakingClient {
                             / (float) durationNanos;
 
             progress = clamp(progress);
-
             float eased = easing.apply(progress);
 
             return startStrength

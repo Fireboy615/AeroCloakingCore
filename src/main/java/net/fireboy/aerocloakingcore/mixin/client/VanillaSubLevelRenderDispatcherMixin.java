@@ -4,7 +4,6 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
 
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
-import net.fireboy.aerocloakingcore.client.config.AeroCloakingCoreClientConfig;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.renderer.RenderType;
@@ -105,8 +104,9 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
     ) {
 
         boolean alphaCloakActive =
-                AeroCloakingCoreClientConfig.RENDER_MODE.get()
-                        == CloakRenderMode.ALPHA
+                CloakingClient.getRenderMode(
+                        renderData.getSubLevel()
+                ) == CloakRenderMode.ALPHA
                         && CloakingClient.getCloakStrength(
                                 renderData.getSubLevel().getUniqueId()
                         ) > 0.0001F;

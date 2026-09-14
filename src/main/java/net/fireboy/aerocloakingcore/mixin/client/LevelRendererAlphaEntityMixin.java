@@ -4,7 +4,6 @@ import com.mojang.blaze3d.vertex.PoseStack;
 
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.client.DeferredEntityRender;
-import net.fireboy.aerocloakingcore.client.config.AeroCloakingCoreClientConfig;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.Camera;
@@ -100,7 +99,7 @@ public abstract class LevelRendererAlphaEntityMixin {
             return;
         }
 
-        if (AeroCloakingCoreClientConfig.RENDER_MODE.get()
+        if (CloakingClient.getEntityRenderMode(entity)
                 != CloakRenderMode.ALPHA) {
             return;
         }

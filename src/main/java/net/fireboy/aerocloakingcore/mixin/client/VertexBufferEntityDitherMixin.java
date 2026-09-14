@@ -4,7 +4,6 @@ import com.mojang.blaze3d.vertex.VertexBuffer;
 
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.client.EntityCloakRenderState;
-import net.fireboy.aerocloakingcore.client.config.AeroCloakingCoreClientConfig;
 
 import net.minecraft.client.renderer.ShaderInstance;
 
@@ -49,7 +48,7 @@ public abstract class VertexBufferEntityDitherMixin {
 
         aerocloakingcore$entityDitherUniformLocation = -1;
 
-        if (AeroCloakingCoreClientConfig.RENDER_MODE.get()
+        if (EntityCloakRenderState.getRenderMode()
                 != CloakRenderMode.DITHER) {
             return;
         }

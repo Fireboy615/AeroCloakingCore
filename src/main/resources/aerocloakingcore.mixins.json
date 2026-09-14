@@ -7,7 +7,6 @@
     "client.VanillaSubLevelRenderDispatcherMixin",
     "client.FancySubLevelRenderDispatcherMixin",
     "client.VanillaChunkedSubLevelRenderDataMixin",
-    "client.LevelRendererHitOutlineMixin",
     "client.LevelRendererAlphaEntityMixin",
     "client.EntityRenderDispatcherMixin",
     "client.RenderTypeEntityCloakMixin",

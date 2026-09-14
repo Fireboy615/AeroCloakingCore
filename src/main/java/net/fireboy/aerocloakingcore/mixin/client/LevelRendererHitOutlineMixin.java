@@ -1,93 +1,83 @@
 package net.fireboy.aerocloakingcore.mixin.client;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
-import net.fireboy.aerocloakingcore.client.config.AeroCloakingCoreClientConfig;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
-import net.minecraft.client.Camera;
-import net.minecraft.client.DeltaTracker;
-import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.LevelRenderer;
-import net.minecraft.client.renderer.MultiBufferSource;
-import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.HitResult;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.block.state.BlockState;
 
-import net.neoforged.neoforge.client.ClientHooks;
+import org.jetbrains.annotations.Nullable;
 
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Suppresses block hover highlighting while a Sable sublevel is partially
- * cloaked with the ALPHA renderer.
+ * Suppresses Minecraft's normal targeted-block wireframe while the targeted
+ * block belongs to a partially ALPHA-cloaked Sable sublevel.
  *
- * Hooking ClientHooks.onDrawHighlight is intentionally earlier than
- * LevelRenderer.renderHitOutline: Sable transforms the sublevel highlight
- * around this NeoForge hook, and other mods may also handle the highlight
- * here before vanilla renderHitOutline is reached.
+ * Sable still transforms the targeting/pose normally; this hooks the final
+ * LevelRenderer.renderHitOutline(...) method that actually emits the line
+ * geometry, so it cannot interfere with the delayed alpha render.
  */
-@Mixin(value = ClientHooks.class, priority = 2100)
+@Mixin(value = LevelRenderer.class, priority = 1800)
 public abstract class LevelRendererHitOutlineMixin {
 
+    @Shadow
+    @Nullable
+    private ClientLevel level;
+
     @Inject(
-            method = "onDrawHighlight",
+            method = "renderHitOutline",
             at = @At("HEAD"),
-            cancellable = true
+            cancellable = true,
+            require = 1
     )
-    private static void aerocloakingcore$suppressAlphaCloakOutline(
-            LevelRenderer context,
-            Camera camera,
-            HitResult target,
-            DeltaTracker deltaTracker,
+    private void aerocloakingcore$hideTargetOutlineDuringAlphaCloak(
             PoseStack poseStack,
-            MultiBufferSource bufferSource,
-            CallbackInfoReturnable<Boolean> cir
+            VertexConsumer consumer,
+            Entity entity,
+            double camX,
+            double camY,
+            double camZ,
+            BlockPos pos,
+            BlockState state,
+            CallbackInfo ci
     ) {
-
-        if (AeroCloakingCoreClientConfig.RENDER_MODE.get()
-                != CloakRenderMode.ALPHA) {
-            return;
-        }
-
-        if (!(target instanceof BlockHitResult blockTarget)) {
-            return;
-        }
-
-        Minecraft minecraft = Minecraft.getInstance();
-
-        if (minecraft.level == null) {
+        if (level == null) {
             return;
         }
 
         Object containing =
-                Sable.HELPER.getContaining(
-                        minecraft.level,
-                        blockTarget.getBlockPos()
-                );
+                Sable.HELPER.getContaining(level, pos);
 
         if (!(containing instanceof ClientSubLevel subLevel)) {
+            return;
+        }
+
+        if (CloakingClient.getRenderMode(subLevel)
+                != CloakRenderMode.ALPHA) {
             return;
         }
 
         float cloakStrength =
                 CloakingClient.getViewerCloakStrength(subLevel);
 
-        if (cloakStrength <= 0.0001F) {
-            return;
+        // Fully visible: retain Minecraft/Sable's normal targeted-block box.
+        // Once alpha cloaking starts, suppress the wireframe completely.
+        if (cloakStrength > 0.0001F) {
+            ci.cancel();
         }
-
-        /*
-         * Returning true means the highlight has been handled. Because this
-         * injection runs before NeoForge posts RenderHighlightEvent.Block,
-         * neither a modded highlight nor vanilla's fallback outline is drawn.
-         */
-        cir.setReturnValue(true);
     }
 }

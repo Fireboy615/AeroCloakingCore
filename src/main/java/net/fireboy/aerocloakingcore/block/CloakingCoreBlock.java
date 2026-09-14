@@ -1,22 +1,22 @@
 package net.fireboy.aerocloakingcore.block;
 
+import com.mojang.serialization.MapCodec;
 import net.fireboy.aerocloakingcore.block.entity.CloakingCoreBlockEntity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.BaseEntityBlock;
+import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityTicker;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import org.jetbrains.annotations.Nullable;
-
-import com.mojang.serialization.MapCodec;
-import net.minecraft.world.level.block.RenderShape;
 
 public class CloakingCoreBlock extends BaseEntityBlock {
 
@@ -38,25 +38,40 @@ public class CloakingCoreBlock extends BaseEntityBlock {
             Level level,
             BlockPos pos,
             Player player,
-            BlockHitResult hit) {
+            BlockHitResult hit
+    ) {
+        if (level.isClientSide) {
+            return InteractionResult.SUCCESS;
+        }
 
-        if (!level.isClientSide) {
+        BlockEntity blockEntity = level.getBlockEntity(pos);
 
-            BlockEntity blockEntity = level.getBlockEntity(pos);
+        if (!(blockEntity instanceof CloakingCoreBlockEntity core)) {
+            return InteractionResult.PASS;
+        }
 
-            if (blockEntity instanceof CloakingCoreBlockEntity core) {
+        // Shift-right-click = immediate binary manual override.
+        // The next Redstone Link signal update will automatically retake control.
+        if (player.isShiftKeyDown()) {
+            float strength = core.toggleManualCloak();
 
-                core.toggle();
+            player.displayClientMessage(
+                    Component.translatable(
+                            "message.aerocloakingcore.manual_cloak",
+                            Math.round(strength * 100.0F)
+                    ),
+                    true
+            );
 
-                player.displayClientMessage(
-                        Component.literal(
-                                core.isActive()
-                                        ? "Cloaking Core: ON"
-                                        : "Cloaking Core: OFF"
-                        ),
-                        true
-                );
-            }
+            return InteractionResult.SUCCESS;
+        }
+
+        // Normal right-click opens the per-core UI.
+        if (player instanceof ServerPlayer serverPlayer) {
+            serverPlayer.openMenu(
+                    core,
+                    buffer -> core.getSettings().write(buffer)
+            );
         }
 
         return InteractionResult.SUCCESS;
@@ -65,8 +80,8 @@ public class CloakingCoreBlock extends BaseEntityBlock {
     @Override
     public BlockEntity newBlockEntity(
             BlockPos pos,
-            BlockState state) {
-
+            BlockState state
+    ) {
         return new CloakingCoreBlockEntity(pos, state);
     }
 
@@ -74,12 +89,10 @@ public class CloakingCoreBlock extends BaseEntityBlock {
     public <T extends BlockEntity> @Nullable BlockEntityTicker<T> getTicker(
             Level level,
             BlockState state,
-            BlockEntityType<T> type) {
-
+            BlockEntityType<T> type
+    ) {
         if (level instanceof ServerLevel) {
-
             return (level0, pos, state0, blockEntity) -> {
-
                 if (blockEntity instanceof CloakingCoreBlockEntity core) {
                     core.serverTick();
                 }
