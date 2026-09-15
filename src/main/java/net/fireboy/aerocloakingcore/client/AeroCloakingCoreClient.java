@@ -13,8 +13,13 @@ import com.mojang.blaze3d.vertex.VertexFormat;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.engine_room.flywheel.lib.visualization.SimpleBlockEntityVisualizer;
 
 import net.fireboy.aerocloakingcore.AeroCloakingCore;
+import net.fireboy.aerocloakingcore.block.entity.ModBlockEntities;
+import net.fireboy.aerocloakingcore.client.render.CloakingCoreModels;
+import net.fireboy.aerocloakingcore.client.render.CloakingCoreVisual;
+import net.fireboy.aerocloakingcore.client.screen.AeroCloakingCoreConfigScreen;
 import net.fireboy.aerocloakingcore.client.screen.CloakingCoreScreen;
 import net.fireboy.aerocloakingcore.menu.ModMenus;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
@@ -31,10 +36,12 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
+import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
+import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 import net.neoforged.neoforge.client.event.RegisterMenuScreensEvent;
 import net.neoforged.neoforge.client.event.RenderHighlightEvent;
-import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.common.NeoForge;
 
 /** Client-only registration and render hooks. */
@@ -42,20 +49,43 @@ import net.neoforged.neoforge.common.NeoForge;
 public final class AeroCloakingCoreClient {
 
     /**
-     * Mesh for the current targeted block outline.
+     * Reusable storage for the current ALPHA block outline.
      *
-     * It is built while Sable has its transformed sublevel PoseStack/camera
-     * active, but deliberately drawn later after translucent block rendering.
+     * The outline is BUILT during NeoForge's highlight event while Sable's
+     * transformed PoseStack/camera are active, then DRAWN later by
+     * LevelRendererAlphaSubLevelMixin after the delayed ALPHA sublevel replay.
      */
-    private final ByteBufferBuilder outlineBuffer = new ByteBufferBuilder(4096);
+    private static final ByteBufferBuilder OUTLINE_BUFFER =
+            new ByteBufferBuilder(4096);
 
-    private MeshData pendingAlphaOutline;
+    private static MeshData pendingAlphaOutline;
 
-    public AeroCloakingCoreClient(IEventBus modEventBus) {
+    public AeroCloakingCoreClient(
+            IEventBus modEventBus,
+            ModContainer modContainer
+    ) {
+        // Load the rotor partial models on the client before they are needed.
+        CloakingCoreModels.init();
+
+        modEventBus.addListener(this::clientSetup);
         modEventBus.addListener(this::registerScreens);
 
+        modContainer.registerExtensionPoint(
+                IConfigScreenFactory.class,
+                (container, parent) ->
+                        new AeroCloakingCoreConfigScreen(parent)
+        );
+
         NeoForge.EVENT_BUS.addListener(this::onBlockHighlight);
-        NeoForge.EVENT_BUS.addListener(this::onRenderLevelStage);
+    }
+
+    private void clientSetup(FMLClientSetupEvent event) {
+        event.enqueueWork(() ->
+                SimpleBlockEntityVisualizer
+                        .builder(ModBlockEntities.CLOAKING_CORE.get())
+                        .factory(CloakingCoreVisual::new)
+                        .apply()
+        );
     }
 
     private void registerScreens(RegisterMenuScreensEvent event) {
@@ -66,14 +96,12 @@ public final class AeroCloakingCoreClient {
     }
 
     /**
-     * Replaces the normal target outline for an actively-cloaking ALPHA
+     * Captures the normal target outline for an actively-cloaking ALPHA
      * sublevel.
      *
      * Sable calls NeoForge's highlight hook with a transformed PoseStack and
-     * sublevel camera. We use those transforms to BUILD the exact vanilla
-     * outline now, but do not DRAW it now. Drawing it during the normal
-     * highlight pass happens before the ALPHA sublevel's delayed translucent
-     * render and is what caused the visible cracks/seams.
+     * sublevel camera. We use those exact transforms to build the vanilla-style
+     * line mesh now, but deliberately do not draw it yet.
      */
     private void onBlockHighlight(RenderHighlightEvent.Block event) {
         clearPendingOutline();
@@ -105,9 +133,11 @@ public final class AeroCloakingCoreClient {
 
         /*
          * Use the core/base cloak strength rather than viewer strength.
-         * Proximity reveal can make the viewer strength 0 while the core is
-         * still actively cloaking; we still need the safe late outline path in
-         * that situation.
+         *
+         * Proximity reveal can make viewer strength zero while the core is
+         * still actively cloaking. In that case the sublevel still uses our
+         * delayed ALPHA render path, so the outline must also use the delayed
+         * path.
          */
         if (CloakingClient.getCloakStrength(
                 subLevel.getUniqueId()
@@ -115,7 +145,7 @@ public final class AeroCloakingCoreClient {
             return;
         }
 
-        // Stop the original early selection outline from being queued.
+        // Suppress the normal early outline.
         event.setCanceled(true);
 
         BlockState state =
@@ -139,23 +169,19 @@ public final class AeroCloakingCoreClient {
         double y = blockPos.getY() - cameraPosition.y;
         double z = blockPos.getZ() - cameraPosition.z;
 
-        outlineBuffer.clear();
+        OUTLINE_BUFFER.clear();
 
         BufferBuilder builder =
                 new BufferBuilder(
-                        outlineBuffer,
+                        OUTLINE_BUFFER,
                         VertexFormat.Mode.LINES,
                         DefaultVertexFormat.POSITION_COLOR_NORMAL
                 );
 
         /*
-         * This intentionally mirrors vanilla LevelRenderer.renderShape(),
-         * rather than LevelRenderer.renderVoxelShape().
-         *
-         * renderVoxelShape() splits a stair/complex VoxelShape into separate
-         * AABBs and outlines every AABB, which creates the extra line through
-         * the middle of stair sides. forAllEdges() on the complete VoxelShape
-         * gives us vanilla's actual outer selection edges.
+         * Mirror vanilla LevelRenderer.renderShape() using the complete
+         * VoxelShape. This avoids drawing internal component-box edges on
+         * stairs and other complex shapes.
          */
         renderVanillaShape(
                 event.getPoseStack(),
@@ -174,16 +200,14 @@ public final class AeroCloakingCoreClient {
     }
 
     /**
-     * Draw after the ALPHA sublevel has completed its delayed translucent
-     * block render. At this point the outline blends over the already-composed
-     * sublevel instead of becoming a transparent-looking crack through it.
+     * Called from LevelRendererAlphaSubLevelMixin after the delayed ALPHA
+     * sublevel geometry has finished rendering.
+     *
+     * This is intentionally NOT a RenderLevelStageEvent.AFTER_PARTICLES hook:
+     * that stage occurs too early for this mod's custom late ALPHA replay and
+     * caused the sublevel geometry to paint over the selection outline.
      */
-    private void onRenderLevelStage(RenderLevelStageEvent event) {
-        if (event.getStage()
-                != RenderLevelStageEvent.Stage.AFTER_PARTICLES) {
-            return;
-        }
-
+    public static void renderPendingAlphaOutline() {
         MeshData outline = pendingAlphaOutline;
         pendingAlphaOutline = null;
 
@@ -191,14 +215,18 @@ public final class AeroCloakingCoreClient {
             return;
         }
 
-        RenderType lines = RenderType.lines();
+        Minecraft.getInstance()
+                .getMainRenderTarget()
+                .bindWrite(false);
 
+        RenderType lines = RenderType.lines();
         lines.setupRenderState();
 
         try {
             /*
-             * Keep normal depth TESTING so hidden edges stay hidden, but do not
-             * let the selection outline WRITE depth into later render passes.
+             * Keep normal line depth testing so hidden edges remain hidden.
+             * Disable only depth WRITES so the outline cannot affect later
+             * debug/world rendering.
              */
             RenderSystem.depthMask(false);
             BufferUploader.drawWithShader(outline);
@@ -210,9 +238,6 @@ public final class AeroCloakingCoreClient {
 
     /**
      * Copy of vanilla 1.21.1's private LevelRenderer.renderShape logic.
-     * Keeping the full VoxelShape intact is important for stairs and other
-     * non-cubic blocks because it avoids outlining the internal component
-     * boxes individually.
      */
     private static void renderVanillaShape(
             PoseStack poseStack,
@@ -279,7 +304,7 @@ public final class AeroCloakingCoreClient {
         );
     }
 
-    private void clearPendingOutline() {
+    private static void clearPendingOutline() {
         if (pendingAlphaOutline != null) {
             pendingAlphaOutline.close();
             pendingAlphaOutline = null;

@@ -95,3 +95,18 @@ Example mod description.
 [[mixins]]
 config = "aerocloakingcore.mixins.json"
 
+# Aero Cloaking Core extends Sable's Flywheel embedded shader data, so its
+# Flywheel resource overrides must be applied after Sable's compatibility layer.
+[[dependencies.${mod_id}]]
+    modId="sable"
+    type="required"
+    versionRange="[2.0.5,)"
+    ordering="AFTER"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="flywheel"
+    type="required"
+    versionRange="[1.0.6,2.0)"
+    ordering="AFTER"
+    side="CLIENT"

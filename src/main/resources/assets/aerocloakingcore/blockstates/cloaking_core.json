@@ -1,7 +1,51 @@
 {
   "variants": {
-    "": {
-      "model": "aerocloakingcore:block/cloaking_core"
+    "chamber=false,facing=south": {
+      "model": "aerocloakingcore:block/cloaking_core_drive"
+    },
+    "chamber=false,facing=north": {
+      "model": "aerocloakingcore:block/cloaking_core_drive",
+      "y": 180
+    },
+    "chamber=false,facing=east": {
+      "model": "aerocloakingcore:block/cloaking_core_drive",
+      "y": 270
+    },
+    "chamber=false,facing=west": {
+      "model": "aerocloakingcore:block/cloaking_core_drive",
+      "y": 90
+    },
+    "chamber=false,facing=up": {
+      "model": "aerocloakingcore:block/cloaking_core_drive",
+      "x": 90
+    },
+    "chamber=false,facing=down": {
+      "model": "aerocloakingcore:block/cloaking_core_drive",
+      "x": 270
+    },
+
+    "chamber=true,facing=south": {
+      "model": "aerocloakingcore:block/cloaking_core_chamber"
+    },
+    "chamber=true,facing=north": {
+      "model": "aerocloakingcore:block/cloaking_core_chamber",
+      "y": 180
+    },
+    "chamber=true,facing=east": {
+      "model": "aerocloakingcore:block/cloaking_core_chamber",
+      "y": 270
+    },
+    "chamber=true,facing=west": {
+      "model": "aerocloakingcore:block/cloaking_core_chamber",
+      "y": 90
+    },
+    "chamber=true,facing=up": {
+      "model": "aerocloakingcore:block/cloaking_core_chamber",
+      "x": 90
+    },
+    "chamber=true,facing=down": {
+      "model": "aerocloakingcore:block/cloaking_core_chamber",
+      "x": 270
     }
   }
 }

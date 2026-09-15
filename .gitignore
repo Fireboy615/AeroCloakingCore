@@ -1,40 +1,18 @@
-### Gradle ###
-.gradle
+# Gradle
+.gradle/
 build/
-!gradle/wrapper/gradle-wrapper.jar
-!**/src/**/build/
 
-### IntelliJ IDEA ###
+# IntelliJ IDEA
 .idea/
-*.iws
 *.iml
-*.ipr
 out/
-!**/src/**/out/
 
-.run/
-
-### Eclipse ###
-.apt_generated
-.classpath
-.eclipse/
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
-bin/
-!**/src/**/bin/
-
-### VS Code ###
-.vscode/
-
-### Mac OS ###
-.DS_Store
-
-### Minecraft Modding ###
+# NeoForge development runtime
 run/
-!**/src/**/run/
-**/src/generated/**/.cache/
-repo/
-!**/src/**/repo/
+
+# Local source/dependency inspection files
+flywheel-neoforge-*-sources.jar
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

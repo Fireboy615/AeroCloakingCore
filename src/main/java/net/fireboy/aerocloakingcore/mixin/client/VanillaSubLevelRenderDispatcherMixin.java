@@ -3,6 +3,7 @@ package net.fireboy.aerocloakingcore.mixin.client;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
 
+import net.fireboy.aerocloakingcore.client.AlphaSubLevelRenderQueue;
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
@@ -72,19 +73,15 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
     }
 
     /**
-     * ALPHA mode cannot safely draw the sublevel's normally-opaque geometry
-     * during Minecraft's opaque/cutout world passes. Doing that means the
-     * later world-water/translucent pass sees depth/state produced by a
-     * partially-transparent ship and the water visibly changes as soon as
-     * the fade begins.
+     * ALPHA block geometry cannot render in its normal early terrain passes,
+     * because the depth it writes would incorrectly reject later world water
+     * and clouds.
      *
-     * Instead, suppress the sublevel's block geometry during the earlier
-     * layer calls and draw all of its block buffers when Minecraft reaches
-     * the translucent pass. At that point world water has already been drawn,
-     * so the alpha ship can blend over it without changing the world's water
-     * render state.
-     *
-     * DITHER mode keeps Sable's normal per-layer rendering unchanged.
+     * Instead of capturing only the translucent call and replaying every layer
+     * through one shader, capture EACH original terrain-layer call. That gives
+     * AlphaSubLevelRenderQueue enough information to restore the correct
+     * solid/cutout/translucent shader and Sable lighting state at the late
+     * replay point.
      */
     @Redirect(
             method = "renderSectionLayer",
@@ -93,7 +90,7 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
                     target = "Ldev/ryanhcode/sable/sublevel/render/vanilla/VanillaChunkedSubLevelRenderData;renderChunkedSubLevel(Lnet/minecraft/client/renderer/RenderType;Lnet/minecraft/client/renderer/ShaderInstance;Lorg/joml/Matrix4f;DDD)V"
             )
     )
-    private void aerocloakingcore$deferAlphaRenderToTranslucentPass(
+    private void aerocloakingcore$deferAlphaRenderToEndOfWorldPass(
             VanillaChunkedSubLevelRenderData renderData,
             RenderType renderType,
             ShaderInstance shader,
@@ -112,7 +109,6 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
                         ) > 0.0001F;
 
         if (!alphaCloakActive) {
-
             renderData.renderChunkedSubLevel(
                     renderType,
                     shader,
@@ -125,60 +121,12 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
         }
 
         /*
-         * Skip the sublevel during world solid/cutout/etc. passes.
-         * We replay its block buffers once the world translucent pass arrives.
+         * Capture every layer while Minecraft/Sable still have that layer's
+         * proper shader, fog, lightmap, colour and matrices configured.
          */
-        if (renderType != RenderType.translucent()) {
-            return;
-        }
-
-        /*
-         * Use the already-active translucent pass/shader for all block-layer
-         * buffers. They share Minecraft's BLOCK vertex format, while the
-         * CloakingCore render-data mixin supplies the actual cloak alpha.
-         *
-         * Front-to-back self-occlusion is restored because we no longer force
-         * depth writes off in ALPHA mode.
-         */
-        renderData.renderChunkedSubLevel(
-                RenderType.solid(),
-                shader,
-                modelView,
-                cameraX,
-                cameraY,
-                cameraZ
-        );
-
-        renderData.renderChunkedSubLevel(
-                RenderType.cutoutMipped(),
-                shader,
-                modelView,
-                cameraX,
-                cameraY,
-                cameraZ
-        );
-
-        renderData.renderChunkedSubLevel(
-                RenderType.cutout(),
-                shader,
-                modelView,
-                cameraX,
-                cameraY,
-                cameraZ
-        );
-
-        renderData.renderChunkedSubLevel(
-                RenderType.translucent(),
-                shader,
-                modelView,
-                cameraX,
-                cameraY,
-                cameraZ
-        );
-
-        renderData.renderChunkedSubLevel(
-                RenderType.tripwire(),
-                shader,
+        AlphaSubLevelRenderQueue.enqueue(
+                renderData,
+                renderType,
                 modelView,
                 cameraX,
                 cameraY,
@@ -203,7 +151,8 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
                 }
 
                 while (original.hasNext()) {
-                    ClientSubLevel candidate = original.next();
+                    ClientSubLevel candidate =
+                            original.next();
 
                     if (!CloakingClient.shouldHideSubLevel(
                             candidate
@@ -228,7 +177,8 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
             public ClientSubLevel next() {
                 prepare();
 
-                ClientSubLevel result = next;
+                ClientSubLevel result =
+                        next;
 
                 prepared = false;
                 next = null;
