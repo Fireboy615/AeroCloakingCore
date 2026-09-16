@@ -119,7 +119,7 @@ public final class CloakingClient {
                                 id,
                                 CloakingCoreSettings.DEFAULT.withCloakStrength(1.0F),
                                 SERVER_SETTINGS.transitionDurationSeconds(),
-                                SERVER_SETTINGS.fullyCloakedDistance()
+                                defaultFullyCloakedDistance()
                         ))
                         .toList(),
                 SERVER_SETTINGS
@@ -452,8 +452,14 @@ public final class CloakingClient {
     private static double fullyCloakedDistance(UUID subLevelId) {
         return FULLY_CLOAKED_DISTANCES.getOrDefault(
                 subLevelId,
-                SERVER_SETTINGS.fullyCloakedDistance()
+                defaultFullyCloakedDistance()
         );
+    }
+
+    private static double defaultFullyCloakedDistance() {
+        return SERVER_SETTINGS.fullyVisibleDistance()
+                + CloakingServerSettings.BASE_REVEAL_GAP_BLOCKS
+                * SERVER_SETTINGS.revealDistanceMultiplier();
     }
 
     private static double axisDistance(

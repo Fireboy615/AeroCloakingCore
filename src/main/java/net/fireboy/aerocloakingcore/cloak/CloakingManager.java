@@ -214,14 +214,14 @@ public final class CloakingManager {
          * contributors, not just blocks physically placed on the ship. A dead
          * 0-RPM core therefore cannot be spammed for a free efficiency bonus.
          *
-         * 1 core  = 100%
-         * 2 cores = 95%
-         * 3 cores = 90%
-         * 4 cores = 85%
-         * 5 cores = 80%
-         * 6+      = 75%
+         * 1 core  = 100% efficiency
+         * 2 cores = 105%
+         * 3 cores = 110%
+         * 4 cores = 115%
+         * 5 cores = 120%
+         * 6+      = 125%
          */
-        float efficiencyMultiplier = calculateEfficiencyMultiplier(
+        float efficiencyFactor = calculateEfficiencyFactor(
                 potentialContributingCoreCount
         );
 
@@ -250,7 +250,7 @@ public final class CloakingManager {
 
             core.applySystemLoadFromManager(
                     assignedBlocks,
-                    efficiencyMultiplier
+                    efficiencyFactor
             );
         }
 
@@ -285,7 +285,7 @@ public final class CloakingManager {
 
         double fullyCloakedDistance = calculateFullyCloakedDistance(
                 serverSettings.fullyVisibleDistance(),
-                serverSettings.fullyCloakedDistance(),
+                serverSettings.revealDistanceMultiplier(),
                 blockCount,
                 effectiveRpm
         );
@@ -294,7 +294,7 @@ public final class CloakingManager {
         system.totalPotentialCapacity = totalPotentialCapacity;
         system.totalOperationalCapacity = totalOperationalCapacity;
         system.effectiveRpm = effectiveRpm;
-        system.efficiencyMultiplier = efficiencyMultiplier;
+        system.efficiencyFactor = efficiencyFactor;
         system.transitionDurationSeconds = transitionDuration;
         system.fullyCloakedDistance = fullyCloakedDistance;
         system.capacitySatisfied = capacitySatisfied;
@@ -307,7 +307,7 @@ public final class CloakingManager {
                     totalOperationalCapacity,
                     capacitySatisfied,
                     effectiveRpm,
-                    efficiencyMultiplier,
+                    efficiencyFactor,
                     transitionDuration,
                     fullyCloakedDistance
             );
@@ -339,37 +339,39 @@ public final class CloakingManager {
         }
     }
 
-    public static float calculateEfficiencyMultiplier(int contributingCoreCount) {
+    public static float calculateEfficiencyFactor(int contributingCoreCount) {
         if (contributingCoreCount <= 1) {
             return 1.0F;
         }
 
-        return Math.max(
-                0.75F,
-                1.0F - 0.05F * (contributingCoreCount - 1)
+        // 1 core = 100%, 2 = 105%, ... 6+ = 125%.
+        // Stress is divided by this factor, so the UI can describe the value
+        // naturally as an efficiency increase rather than a cost multiplier.
+        return Math.min(
+                1.25F,
+                1.0F + 0.05F * (contributingCoreCount - 1)
         );
     }
 
     /**
      * Calculates the distance where a fully cloaked ship begins to reveal.
      *
-     * The configured fully-visible distance remains fixed. The configured gap
-     * between fully-visible and fully-cloaked distances is the 256-block
-     * reference gap at <=128 system RPM. Larger ships expand that gap by sqrt
-     * of block count. Above 128 average RPM the gap is linearly compressed,
-     * reaching only 10% of its size-scaled value at 256 RPM.
+     * The fully-visible distance is server-configurable (4 blocks by default).
+     * A 1.0x server reveal multiplier gives a 10-block reveal gap for a
+     * 256-block ship at <=128
+     * average RPM, preserving the old 4 -> 14 behaviour. Larger ships expand
+     * the gap by sqrt(block count), while RPM above 128 compresses it down to
+     * 10% of its size-scaled value at 256 RPM.
      */
     public static double calculateFullyCloakedDistance(
-            double configuredFullyVisibleDistance,
-            double configuredFullyCloakedDistance,
+            double fullyVisibleDistance,
+            double revealDistanceMultiplier,
             int blockCount,
             float effectiveRpm
     ) {
-        double visible = Math.max(0.0, configuredFullyVisibleDistance);
-        double configuredGap = Math.max(
-                0.0,
-                configuredFullyCloakedDistance - visible
-        );
+        double visible = Math.max(0.0, fullyVisibleDistance);
+        double configuredGap = CloakingServerSettings.BASE_REVEAL_GAP_BLOCKS
+                * Math.max(0.0, revealDistanceMultiplier);
 
         if (configuredGap <= 0.0 || blockCount <= 0) {
             return visible;
@@ -527,7 +529,7 @@ public final class CloakingManager {
         private int totalOperationalCapacity;
         private boolean capacitySatisfied;
         private float effectiveRpm;
-        private float efficiencyMultiplier = 1.0F;
+        private float efficiencyFactor = 1.0F;
         private float transitionDurationSeconds;
         private double fullyCloakedDistance;
         private int publishedBlockCount = -1;

@@ -5,12 +5,7 @@ import net.fireboy.aerocloakingcore.cloak.CloakingServerSettings;
 
 import net.neoforged.neoforge.common.ModConfigSpec;
 
-/**
- * Server-authoritative cloak behaviour.
- *
- * These values control how every client reveals/fades cloaked sublevels.
- * They are synced to clients inside the normal cloak-state payload.
- */
+/** Server-authoritative cloak behaviour. */
 public final class AeroCloakingCoreServerConfig {
 
     public static final ModConfigSpec SPEC;
@@ -25,7 +20,7 @@ public final class AeroCloakingCoreServerConfig {
 
     public static final ModConfigSpec.BooleanValue PROXIMITY_REVEAL_ENABLED;
     public static final ModConfigSpec.DoubleValue FULLY_VISIBLE_DISTANCE;
-    public static final ModConfigSpec.DoubleValue FULLY_CLOAKED_DISTANCE;
+    public static final ModConfigSpec.DoubleValue REVEAL_DISTANCE_MULTIPLIER;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -35,7 +30,7 @@ public final class AeroCloakingCoreServerConfig {
                 .push("transition");
 
         TRANSITION_DURATION_SECONDS = builder
-                .comment("Seconds used when cloak strength changes.")
+                .comment("Base seconds used when cloak strength changes at 64 RPM. System RPM then scales this duration.")
                 .defineInRange("durationSeconds", 3.0, 0.0, 30.0);
 
         TRANSITION_EASING = builder
@@ -57,7 +52,7 @@ public final class AeroCloakingCoreServerConfig {
                 .defineInRange("aboardFadeSeconds", 1.0, 0.0, 60.0);
 
         LEAVE_GRACE_SECONDS = builder
-                .comment("Seconds a sublevel remains fully visible after a player leaves it.")
+                .comment("Seconds a sublevel remains at its current reveal level after a player leaves it.")
                 .defineInRange("leaveGraceSeconds", 2.0, 0.0, 60.0);
 
         LEAVE_FADE_SECONDS = builder
@@ -69,22 +64,27 @@ public final class AeroCloakingCoreServerConfig {
                 .define("proximityRevealEnabled", true);
 
         FULLY_VISIBLE_DISTANCE = builder
-                .comment("Distance in blocks from the sublevel bounds where cloak is fully suppressed.")
-                .defineInRange("fullyVisibleDistance", 4.0, 0.0, 128.0);
+                .comment(
+                        "Distance from the sublevel bounds where the cloak is fully revealed.",
+                        "This remains the inner/full-reveal distance; ship size and RPM only change",
+                        "the outer distance where the ship begins to become visible."
+                )
+                .defineInRange("fullyVisibleDistance", 4.0, 0.0, 64.0);
 
-        FULLY_CLOAKED_DISTANCE = builder
-                .comment("Distance in blocks from the sublevel bounds where full cloak strength is restored.")
-                .defineInRange("fullyCloakedDistance", 14.0, 0.0, 256.0);
+        REVEAL_DISTANCE_MULTIPLIER = builder
+                .comment(
+                        "Multiplier for the ship-size-based reveal range. ",
+                        "1.0 keeps the default balance: a 256-block ship at <=128 average RPM ",
+                        "starts revealing 14 blocks from its bounds and is fully visible at 4 blocks."
+                )
+                .defineInRange("revealDistanceMultiplier", 1.0, 0.0, 10.0);
 
         builder.pop();
 
         SPEC = builder.build();
     }
 
-    /**
-     * Applies a validated network snapshot to the live server config and saves
-     * it to disk. Returns the exact values that were accepted.
-     */
+    /** Applies a validated network snapshot to the live server config and saves it. */
     public static CloakingServerSettings applyAndSave(
             CloakingServerSettings requested
     ) {
@@ -97,42 +97,33 @@ public final class AeroCloakingCoreServerConfig {
                 normalized.transitionDurationSeconds(),
                 TRANSITION_DURATION_SECONDS.get().floatValue()
         );
-
         float aboardFade = finiteOr(
                 normalized.aboardFadeSeconds(),
                 ABOARD_FADE_SECONDS.get().floatValue()
         );
-
         float leaveGrace = finiteOr(
                 normalized.leaveGraceSeconds(),
                 LEAVE_GRACE_SECONDS.get().floatValue()
         );
-
         float leaveFade = finiteOr(
                 normalized.leaveFadeSeconds(),
                 LEAVE_FADE_SECONDS.get().floatValue()
         );
-
-        double fullyVisible = finiteOr(
+        double fullyVisibleDistance = finiteOr(
                 normalized.fullyVisibleDistance(),
                 FULLY_VISIBLE_DISTANCE.get()
         );
-
-        double fullyCloaked = finiteOr(
-                normalized.fullyCloakedDistance(),
-                FULLY_CLOAKED_DISTANCE.get()
+        double revealMultiplier = finiteOr(
+                normalized.revealDistanceMultiplier(),
+                REVEAL_DISTANCE_MULTIPLIER.get()
         );
 
         transitionDuration = clamp(transitionDuration, 0.0F, 30.0F);
         aboardFade = clamp(aboardFade, 0.0F, 60.0F);
         leaveGrace = clamp(leaveGrace, 0.0F, 60.0F);
         leaveFade = clamp(leaveFade, 0.0F, 60.0F);
-        fullyVisible = clamp(fullyVisible, 0.0, 128.0);
-        fullyCloaked = clamp(fullyCloaked, 0.0, 256.0);
-
-        if (fullyCloaked < fullyVisible) {
-            fullyCloaked = fullyVisible;
-        }
+        fullyVisibleDistance = clamp(fullyVisibleDistance, 0.0, 64.0);
+        revealMultiplier = clamp(revealMultiplier, 0.0, 10.0);
 
         TRANSITION_DURATION_SECONDS.set((double) transitionDuration);
         TRANSITION_EASING.set(
@@ -145,13 +136,11 @@ public final class AeroCloakingCoreServerConfig {
         ABOARD_FADE_SECONDS.set((double) aboardFade);
         LEAVE_GRACE_SECONDS.set((double) leaveGrace);
         LEAVE_FADE_SECONDS.set((double) leaveFade);
-
         PROXIMITY_REVEAL_ENABLED.set(normalized.proximityRevealEnabled());
-        FULLY_VISIBLE_DISTANCE.set(fullyVisible);
-        FULLY_CLOAKED_DISTANCE.set(fullyCloaked);
+        FULLY_VISIBLE_DISTANCE.set(fullyVisibleDistance);
+        REVEAL_DISTANCE_MULTIPLIER.set(revealMultiplier);
 
         SPEC.save();
-
         return CloakingServerSettings.fromConfig();
     }
 

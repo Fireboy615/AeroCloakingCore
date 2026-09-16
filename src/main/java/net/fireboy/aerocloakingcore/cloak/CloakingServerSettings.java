@@ -16,8 +16,17 @@ public record CloakingServerSettings(
         float leaveFadeSeconds,
         boolean proximityRevealEnabled,
         double fullyVisibleDistance,
-        double fullyCloakedDistance
+        double revealDistanceMultiplier
 ) {
+
+    /** Default distance from the sublevel bounds where proximity reveal is 100%. */
+    public static final double DEFAULT_FULLY_VISIBLE_DISTANCE_BLOCKS = 4.0;
+
+    /**
+     * Reveal-gap baseline at 256 ship blocks, 128 average RPM and a 1.0x
+     * reveal-distance multiplier. This preserves the old 4 -> 14 behaviour.
+     */
+    public static final double BASE_REVEAL_GAP_BLOCKS = 10.0;
 
     public static final CloakingServerSettings DEFAULT = new CloakingServerSettings(
             3.0F,
@@ -27,8 +36,8 @@ public record CloakingServerSettings(
             2.0F,
             2.0F,
             true,
-            4.0,
-            14.0
+            DEFAULT_FULLY_VISIBLE_DISTANCE_BLOCKS,
+            1.0
     );
 
     public static CloakingServerSettings fromConfig() {
@@ -41,18 +50,11 @@ public record CloakingServerSettings(
                 AeroCloakingCoreServerConfig.LEAVE_FADE_SECONDS.get().floatValue(),
                 AeroCloakingCoreServerConfig.PROXIMITY_REVEAL_ENABLED.get(),
                 AeroCloakingCoreServerConfig.FULLY_VISIBLE_DISTANCE.get(),
-                AeroCloakingCoreServerConfig.FULLY_CLOAKED_DISTANCE.get()
+                AeroCloakingCoreServerConfig.REVEAL_DISTANCE_MULTIPLIER.get()
         ).normalized();
     }
 
     public CloakingServerSettings normalized() {
-        double visible = clamp(fullyVisibleDistance, 0.0, 128.0);
-        double cloaked = clamp(fullyCloakedDistance, 0.0, 256.0);
-
-        if (cloaked < visible) {
-            cloaked = visible;
-        }
-
         return new CloakingServerSettings(
                 clamp(transitionDurationSeconds, 0.0F, 30.0F),
                 transitionEasing == null ? CloakEasing.SMOOTHSTEP : transitionEasing,
@@ -61,8 +63,8 @@ public record CloakingServerSettings(
                 clamp(leaveGraceSeconds, 0.0F, 60.0F),
                 clamp(leaveFadeSeconds, 0.0F, 60.0F),
                 proximityRevealEnabled,
-                visible,
-                cloaked
+                clamp(fullyVisibleDistance, 0.0, 64.0),
+                clamp(revealDistanceMultiplier, 0.0, 10.0)
         );
     }
 
@@ -77,7 +79,7 @@ public record CloakingServerSettings(
         buffer.writeFloat(value.leaveFadeSeconds());
         buffer.writeBoolean(value.proximityRevealEnabled());
         buffer.writeDouble(value.fullyVisibleDistance());
-        buffer.writeDouble(value.fullyCloakedDistance());
+        buffer.writeDouble(value.revealDistanceMultiplier());
     }
 
     public static CloakingServerSettings read(RegistryFriendlyByteBuf buffer) {

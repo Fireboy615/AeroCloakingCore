@@ -2,8 +2,6 @@ package net.fireboy.aerocloakingcore.client.render;
 
 import java.util.function.Consumer;
 
-import com.simibubi.create.content.kinetics.base.KineticBlockEntityRenderer;
-
 import dev.engine_room.flywheel.api.instance.Instance;
 import dev.engine_room.flywheel.api.model.Model;
 import dev.engine_room.flywheel.api.visual.DynamicVisual;
@@ -45,6 +43,13 @@ public final class CloakingCoreVisual
 
     private final @Nullable TransformedInstance shaftInstance;
     private final @Nullable TransformedInstance paneInstance;
+
+    /** Rotor speed relative to the connected Create input shaft. */
+    private static final double ROTOR_SPEED_RATIO = 0.5;
+
+    /** Continuous client-side rotor phase, in radians. */
+    private double rotorAngleRadians = 0.0;
+    private double lastRenderTick = Double.NaN;
 
     public CloakingCoreVisual(
             VisualizationContext context,
@@ -109,17 +114,42 @@ public final class CloakingCoreVisual
             return;
         }
 
-        float angleRadians = KineticBlockEntityRenderer.getAngleForBe(
-                blockEntity,
-                pos,
-                facing.getAxis()
-        );
+        double renderTick = blockEntity.getLevel() != null
+                ? blockEntity.getLevel().getGameTime() + partialTick
+                : partialTick;
+
+        if (Double.isNaN(lastRenderTick)) {
+            lastRenderTick = renderTick;
+        }
+
+        double deltaTicks = renderTick - lastRenderTick;
+        lastRenderTick = renderTick;
+
+        // Ignore large discontinuities caused by world/chunk reloads.
+        if (deltaTicks < 0.0 || deltaTicks > 5.0) {
+            deltaTicks = 0.0;
+        }
+
+        // 1 RPM = 2*pi radians / 1200 game ticks. Integrating the actual
+        // signed input speed gives a smooth rotor at exactly 1/2 shaft speed
+        // without the wraparound jump caused by scaling Create's wrapped angle.
+        double radiansPerTick = blockEntity.getSpeed()
+                * (Math.PI * 2.0 / 1200.0)
+                * ROTOR_SPEED_RATIO;
+
+        rotorAngleRadians += radiansPerTick * deltaTicks;
+
+        // Keep the accumulator numerically tidy while preserving continuity.
+        if (Math.abs(rotorAngleRadians) > Math.PI * 4096.0) {
+            rotorAngleRadians %= Math.PI * 2.0;
+        }
+
+        float angleRadians = (float) rotorAngleRadians;
 
         /*
-         * Create calculates kinetic angles around the POSITIVE direction of an
-         * axis. Our Blockbench model's local +Z axis is rotated onto FACING.
-         * When FACING is negative (NORTH/WEST/DOWN), invert the local angle so
-         * the rotor remains phase/direction-correct with the connected shaft.
+         * Create's kinetic sign is axis-relative. Our Blockbench model's local
+         * +Z axis is rotated onto FACING, so invert negative axis directions to
+         * keep the visible rotor direction consistent with the input shaft.
          */
         if (facing.getAxisDirection() == Direction.AxisDirection.NEGATIVE) {
             angleRadians = -angleRadians;

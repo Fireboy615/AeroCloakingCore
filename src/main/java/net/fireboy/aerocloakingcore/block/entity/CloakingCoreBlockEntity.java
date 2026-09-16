@@ -40,7 +40,7 @@ import java.util.UUID;
  * - total ship capacity is the sum of every powered core's capacity
  * - ship block load is shared in proportion to each core's capacity
  * - each additional contributing core improves system SU efficiency by 5%,
- *   down to a 75% multiplier at 6+ cores
+ *   up to 125% efficiency at 6+ cores
  * - variable stress scales with cloakStrength^1.2
  * - actual SU is Create-style stress impact multiplied by this core's RPM
  * - there is intentionally no hard SU ceiling; pushing a core above 128 RPM
@@ -54,6 +54,8 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
     private static final String TAG_MANUAL_OVERRIDE = "ManualOverride";
     private static final String TAG_LAST_REDSTONE_SIGNAL = "LastRedstoneSignal";
     private static final String TAG_SUBLEVEL_BLOCK_COUNT = "SubLevelBlockCount";
+    private static final String TAG_ASSIGNED_BLOCK_LOAD = "AssignedBlockLoad";
+    private static final String TAG_SYSTEM_EFFICIENCY_FACTOR = "SystemEfficiencyFactor";
 
     /** Exact minimum mechanical speed required by the Cloaking Core. */
     public static final float MINIMUM_REQUIRED_RPM = 32.0F;
@@ -69,12 +71,16 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
 
     /**
      * Fixed Create stress impact in SU/RPM while the core is spinning.
-     * Actual fixed SU cost therefore rises naturally with RPM.
+     * Kept intentionally modest so small ships are not excessively expensive.
      */
-    public static final float BASE_STRESS_IMPACT = 4.0F;
+    public static final float BASE_STRESS_IMPACT = 0.5F;
 
-    /** Additional stress impact in SU/RPM per assigned ship block. */
-    public static final float STRESS_IMPACT_PER_BLOCK = 0.09F;
+    /**
+     * Additional stress impact in SU/RPM per assigned ship block.
+     * Together with the 0.5 base impact this makes one 256-block core at
+     * 256 RPM consume exactly 4096 SU before any multi-core efficiency bonus.
+     */
+    public static final float STRESS_IMPACT_PER_BLOCK = 0.060546875F;
 
     /** Exponent used for analog cloak-strength stress scaling. */
     public static final float CLOAK_STRENGTH_STRESS_EXPONENT = 1.2F;
@@ -112,7 +118,7 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
     private int systemOperationalCapacity = 0;
     private boolean systemCapacitySatisfied = false;
     private float systemEffectiveRpm = 0.0F;
-    private float systemEfficiencyMultiplier = 1.0F;
+    private float systemEfficiencyFactor = 1.0F;
     private float systemTransitionDurationSeconds = 0.0F;
     private double systemFullyCloakedDistance = 0.0;
 
@@ -198,7 +204,24 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
      * mid-strength values almost free.
      */
     public float getCurrentStressImpact() {
-        float strength = Math.max(0.0F, Math.min(1.0F, settings.cloakStrength()));
+        return calculateStressImpact(
+                assignedBlockLoad,
+                settings.cloakStrength(),
+                systemEfficiencyFactor
+        );
+    }
+
+    /**
+     * Shared stress calculation used by the server, Create's hover HUD and the
+     * client-side menu preview. Keeping one implementation prevents small
+     * rounding/formula differences between the two displays.
+     */
+    public static float calculateStressImpact(
+            float assignedBlockLoad,
+            float cloakStrength,
+            float efficiencyFactor
+    ) {
+        float strength = Math.max(0.0F, Math.min(1.0F, cloakStrength));
         float cloakLoadFactor = (float) Math.pow(
                 strength,
                 CLOAK_STRENGTH_STRESS_EXPONENT
@@ -206,10 +229,25 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
 
         float rawImpact = BASE_STRESS_IMPACT
                 + STRESS_IMPACT_PER_BLOCK
-                * assignedBlockLoad
+                * Math.max(0.0F, assignedBlockLoad)
                 * cloakLoadFactor;
 
-        return rawImpact * systemEfficiencyMultiplier;
+        // More contributing cores improve field efficiency. A 105% efficient
+        // system therefore divides raw stress by 1.05.
+        return rawImpact / Math.max(1.0F, efficiencyFactor);
+    }
+
+    public static float calculateRequiredSu(
+            float assignedBlockLoad,
+            float cloakStrength,
+            float efficiencyFactor,
+            float rpm
+    ) {
+        return calculateStressImpact(
+                assignedBlockLoad,
+                cloakStrength,
+                efficiencyFactor
+        ) * Math.max(0.0F, rpm);
     }
 
     /**
@@ -310,8 +348,8 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         return systemTransitionDurationSeconds;
     }
 
-    public float getSystemEfficiencyMultiplier() {
-        return systemEfficiencyMultiplier;
+    public float getSystemEfficiencyFactor() {
+        return systemEfficiencyFactor;
     }
 
     public double getSystemFullyCloakedDistance() {
@@ -354,18 +392,18 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
     /** Called only by CloakingManager on the server thread. */
     public void applySystemLoadFromManager(
             float assignedBlockLoad,
-            float efficiencyMultiplier
+            float efficiencyFactor
     ) {
         float normalizedLoad = Math.max(0.0F, assignedBlockLoad);
         float normalizedEfficiency = Math.max(
-                0.0F,
-                Math.min(1.0F, efficiencyMultiplier)
+                1.0F,
+                Math.min(1.25F, efficiencyFactor)
         );
 
         boolean loadChanged =
                 Math.abs(this.assignedBlockLoad - normalizedLoad) >= 0.01F;
         boolean efficiencyChanged =
-                Math.abs(this.systemEfficiencyMultiplier - normalizedEfficiency)
+                Math.abs(this.systemEfficiencyFactor - normalizedEfficiency)
                         >= 0.0001F;
 
         if (!loadChanged && !efficiencyChanged) {
@@ -373,19 +411,24 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         }
 
         this.assignedBlockLoad = normalizedLoad;
-        this.systemEfficiencyMultiplier = normalizedEfficiency;
+        this.systemEfficiencyFactor = normalizedEfficiency;
 
         // Create caches member stress coefficients. Push the new value into the
         // live network whenever block load or multi-core efficiency changes.
         refreshDynamicStress();
         setChanged();
+
+        // The Create goggle HUD calculates stress on the client-side block
+        // entity. Sync the assigned load/efficiency whenever they change so
+        // hovering the block updates at the same time as the menu.
+        sendData();
     }
 
     /** Compatibility helper retained for older manager call sites. */
     public void setAssignedBlockLoadFromManager(float assignedBlockLoad) {
         applySystemLoadFromManager(
                 assignedBlockLoad,
-                systemEfficiencyMultiplier
+                systemEfficiencyFactor
         );
     }
 
@@ -419,7 +462,7 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
             int operationalCapacity,
             boolean capacitySatisfied,
             float effectiveRpm,
-            float efficiencyMultiplier,
+            float efficiencyFactor,
             float transitionDurationSeconds,
             double fullyCloakedDistance
     ) {
@@ -429,9 +472,9 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         this.systemOperationalCapacity = Math.max(0, operationalCapacity);
         this.systemCapacitySatisfied = capacitySatisfied;
         this.systemEffectiveRpm = Math.max(0.0F, effectiveRpm);
-        this.systemEfficiencyMultiplier = Math.max(
-                0.0F,
-                Math.min(1.0F, efficiencyMultiplier)
+        this.systemEfficiencyFactor = Math.max(
+                1.0F,
+                Math.min(1.25F, efficiencyFactor)
         );
         this.systemTransitionDurationSeconds = Math.max(
                 0.0F,
@@ -534,6 +577,14 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         settings = settings.withRenderMode(renderMode);
         publishSettingsToSystem();
         setChanged();
+
+        // The source core already has these settings before CloakingManager
+        // mirrors them, so applySystemSettingsFromManager() intentionally
+        // returns early for this block entity. Push the local change to its
+        // client copy explicitly so HUD/render state cannot remain stale.
+        if (level != null && !level.isClientSide) {
+            sendData();
+        }
     }
 
     /**
@@ -552,6 +603,15 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         settings = settings.withCloakStrength(strength);
         refreshDynamicStress();
         publishSettingsToSystem();
+
+        // Keep this source core's client-side block entity synchronized too.
+        // Without this, the manager updates every *other* core but the source
+        // core sees identical settings and returns early, leaving Create's
+        // hover stress HUD on the previous cloak strength.
+        setChanged();
+        if (level != null && !level.isClientSide) {
+            sendData();
+        }
     }
 
     private void publishSettingsToSystem() {
@@ -582,6 +642,8 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         tag.putBoolean(TAG_MANUAL_OVERRIDE, manualOverride);
         tag.putInt(TAG_LAST_REDSTONE_SIGNAL, lastRedstoneSignal);
         tag.putInt(TAG_SUBLEVEL_BLOCK_COUNT, subLevelBlockCount);
+        tag.putFloat(TAG_ASSIGNED_BLOCK_LOAD, assignedBlockLoad);
+        tag.putFloat(TAG_SYSTEM_EFFICIENCY_FACTOR, systemEfficiencyFactor);
 
         tag.put(
                 TAG_LINK_FIRST,
@@ -613,6 +675,14 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
                 tag.getInt(TAG_SUBLEVEL_BLOCK_COUNT)
         );
 
+        assignedBlockLoad = Math.max(
+                0.0F,
+                tag.getFloat(TAG_ASSIGNED_BLOCK_LOAD)
+        );
+        systemEfficiencyFactor = tag.contains(TAG_SYSTEM_EFFICIENCY_FACTOR)
+                ? Math.max(1.0F, Math.min(1.25F, tag.getFloat(TAG_SYSTEM_EFFICIENCY_FACTOR)))
+                : 1.0F;
+
         linkFrequencyFirst = tag.contains(TAG_LINK_FIRST)
                 ? ItemStack.parseOptional(
                         registries,
@@ -641,7 +711,7 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
             systemOperationalCapacity = 0;
             systemCapacitySatisfied = false;
             systemEffectiveRpm = 0.0F;
-            systemEfficiencyMultiplier = 1.0F;
+            systemEfficiencyFactor = 1.0F;
             systemTransitionDurationSeconds = 0.0F;
             systemFullyCloakedDistance = 0.0;
             checkTimer = SUBLEVEL_CHECK_INTERVAL_TICKS - 1;
@@ -752,7 +822,7 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
             systemOperationalCapacity = 0;
             systemCapacitySatisfied = false;
             systemEffectiveRpm = 0.0F;
-            systemEfficiencyMultiplier = 1.0F;
+            systemEfficiencyFactor = 1.0F;
             systemTransitionDurationSeconds = 0.0F;
             systemFullyCloakedDistance = 0.0;
 
@@ -811,7 +881,7 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         systemOperationalCapacity = 0;
         systemCapacitySatisfied = false;
         systemEffectiveRpm = 0.0F;
-        systemEfficiencyMultiplier = 1.0F;
+        systemEfficiencyFactor = 1.0F;
         systemTransitionDurationSeconds = 0.0F;
         systemFullyCloakedDistance = 0.0;
         checkTimer = SUBLEVEL_CHECK_INTERVAL_TICKS - 1;

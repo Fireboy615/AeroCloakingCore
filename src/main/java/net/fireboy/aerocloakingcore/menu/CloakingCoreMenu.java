@@ -22,10 +22,10 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
     public static final int FREQUENCY_FIRST_SLOT = 0;
     public static final int FREQUENCY_SECOND_SLOT = 1;
 
-    public static final int DATA_RPM_X10 = 0;
+    public static final int DATA_RPM_X100 = 0;
     public static final int DATA_CORE_POTENTIAL_CAPACITY = 1;
     public static final int DATA_CORE_OPERATIONAL_CAPACITY = 2;
-    public static final int DATA_ASSIGNED_BLOCKS = 3;
+    public static final int DATA_ASSIGNED_BLOCKS_X100 = 3;
     public static final int DATA_SYSTEM_BLOCKS = 4;
     public static final int DATA_SYSTEM_POTENTIAL_CAPACITY = 5;
     public static final int DATA_SYSTEM_OPERATIONAL_CAPACITY = 6;
@@ -33,11 +33,14 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
     public static final int DATA_CURRENT_SU = 8;
     public static final int DATA_TRANSITION_CENTISECONDS = 9;
     public static final int DATA_STATUS = 10;
-    public static final int DATA_THEORETICAL_RPM_X10 = 11;
-    public static final int DATA_SYSTEM_RPM_X10 = 12;
-    public static final int DATA_EFFICIENCY_PERMILLE = 13;
+    public static final int DATA_THEORETICAL_RPM_X100 = 11;
+    public static final int DATA_SYSTEM_RPM_X100 = 12;
+    public static final int DATA_EFFICIENCY_X10000 = 13;
     public static final int DATA_REVEAL_DISTANCE_CENTI = 14;
-    public static final int DATA_COUNT = 15;
+    public static final int DATA_SERVER_STRENGTH_X10000 = 15;
+    public static final int DATA_STRESS_IMPACT_X1000 = 16;
+    public static final int DATA_SYNC_MARKER = 17;
+    public static final int DATA_COUNT = 18;
 
     @Nullable
     private final CloakingCoreBlockEntity core;
@@ -99,8 +102,8 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
             @Override
             public int get(int index) {
                 return switch (index) {
-                    case DATA_RPM_X10 -> clampDataValue(
-                            Math.round(core.getCurrentRpm() * 10.0F)
+                    case DATA_RPM_X100 -> clampDataValue(
+                            Math.round(core.getCurrentRpm() * 100.0F)
                     );
                     case DATA_CORE_POTENTIAL_CAPACITY -> clampDataValue(
                             core.getPotentialCloakCapacityBlocks()
@@ -108,8 +111,8 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
                     case DATA_CORE_OPERATIONAL_CAPACITY -> clampDataValue(
                             core.getOperationalCloakCapacityBlocks()
                     );
-                    case DATA_ASSIGNED_BLOCKS -> clampDataValue(
-                            Math.round(core.getAssignedBlockLoad())
+                    case DATA_ASSIGNED_BLOCKS_X100 -> clampDataValue(
+                            Math.round(core.getAssignedBlockLoad() * 100.0F)
                     );
                     case DATA_SYSTEM_BLOCKS -> clampDataValue(
                             core.getSystemBlockCount()
@@ -135,18 +138,25 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
                     case DATA_STATUS -> clampDataValue(
                             core.getSystemStatusCode()
                     );
-                    case DATA_THEORETICAL_RPM_X10 -> clampDataValue(
-                            Math.round(core.getTheoreticalRpm() * 10.0F)
+                    case DATA_THEORETICAL_RPM_X100 -> clampDataValue(
+                            Math.round(core.getTheoreticalRpm() * 100.0F)
                     );
-                    case DATA_SYSTEM_RPM_X10 -> clampDataValue(
-                            Math.round(core.getSystemEffectiveRpm() * 10.0F)
+                    case DATA_SYSTEM_RPM_X100 -> clampDataValue(
+                            Math.round(core.getSystemEffectiveRpm() * 100.0F)
                     );
-                    case DATA_EFFICIENCY_PERMILLE -> clampDataValue(
-                            Math.round(core.getSystemEfficiencyMultiplier() * 1000.0F)
+                    case DATA_EFFICIENCY_X10000 -> clampDataValue(
+                            Math.round(core.getSystemEfficiencyFactor() * 10000.0F)
                     );
                     case DATA_REVEAL_DISTANCE_CENTI -> clampDataValue(
                             (int) Math.round(core.getSystemFullyCloakedDistance() * 100.0)
                     );
+                    case DATA_SERVER_STRENGTH_X10000 -> clampDataValue(
+                            Math.round(core.getCloakStrength() * 10000.0F)
+                    );
+                    case DATA_STRESS_IMPACT_X1000 -> clampDataValue(
+                            Math.round(core.getCurrentStressImpact() * 1000.0F)
+                    );
+                    case DATA_SYNC_MARKER -> 12345;
                     default -> 0;
                 };
             }
@@ -177,22 +187,22 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
         addSlot(new FrequencySlot(
                 frequencies,
                 FREQUENCY_FIRST_SLOT,
-                127,
-                157,
+                244,
+                188,
                 true
         ));
 
         addSlot(new FrequencySlot(
                 frequencies,
                 FREQUENCY_SECOND_SLOT,
-                157,
-                157,
+                272,
+                188,
                 false
         ));
 
         // Player inventory.
-        int inventoryX = 69;
-        int inventoryY = 217;
+        int inventoryX = 79;
+        int inventoryY = 248;
 
         for (int row = 0; row < 3; row++) {
             for (int column = 0; column < 9; column++) {
@@ -211,7 +221,7 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
                     inventory,
                     column,
                     inventoryX + column * 18,
-                    275
+                    306
             ));
         }
     }
@@ -221,23 +231,45 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
     }
 
     public float getRpm() {
-        return systemData.get(DATA_RPM_X10) / 10.0F;
+        return systemData.get(DATA_RPM_X100) / 100.0F;
     }
 
     public float getTheoreticalRpm() {
-        return systemData.get(DATA_THEORETICAL_RPM_X10) / 10.0F;
+        return systemData.get(DATA_THEORETICAL_RPM_X100) / 100.0F;
     }
 
     public float getSystemRpm() {
-        return systemData.get(DATA_SYSTEM_RPM_X10) / 10.0F;
+        return systemData.get(DATA_SYSTEM_RPM_X100) / 100.0F;
     }
 
-    public float getSystemEfficiencyMultiplier() {
-        return systemData.get(DATA_EFFICIENCY_PERMILLE) / 1000.0F;
+    public float getSystemEfficiencyFactor() {
+        return systemData.get(DATA_EFFICIENCY_X10000) / 10000.0F;
     }
 
     public double getRevealStartDistance() {
         return systemData.get(DATA_REVEAL_DISTANCE_CENTI) / 100.0;
+    }
+
+    public boolean hasServerStats() {
+        return systemData.get(DATA_SYNC_MARKER) == 12345;
+    }
+
+    public float getServerCloakStrength() {
+        return systemData.get(DATA_SERVER_STRENGTH_X10000) / 10000.0F;
+    }
+
+    public float getCurrentStressImpact() {
+        return systemData.get(DATA_STRESS_IMPACT_X1000) / 1000.0F;
+    }
+
+    /**
+     * Matches Create's hover readout: current stress impact multiplied by the
+     * actual current shaft speed. If the network is stalled, fall back to the
+     * theoretical input so the menu still explains the demand that caused it.
+     */
+    public float getAuthoritativeDisplayedSu() {
+        float rpm = getRpm() > 0.001F ? getRpm() : getTheoreticalRpm();
+        return getCurrentStressImpact() * rpm;
     }
 
     public int getCorePotentialCapacity() {
@@ -248,8 +280,12 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
         return systemData.get(DATA_CORE_OPERATIONAL_CAPACITY);
     }
 
+    public float getAssignedBlockLoad() {
+        return systemData.get(DATA_ASSIGNED_BLOCKS_X100) / 100.0F;
+    }
+
     public int getAssignedBlocks() {
-        return systemData.get(DATA_ASSIGNED_BLOCKS);
+        return Math.round(getAssignedBlockLoad());
     }
 
     public int getSystemBlocks() {

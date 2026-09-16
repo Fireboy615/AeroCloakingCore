@@ -52,13 +52,13 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
             LEAVE_FADE + ROW_HEIGHT + SECTION_GAP;
     private static final int PROXIMITY_REVEAL =
             PROXIMITY_HEADER + SECTION_HEADER_HEIGHT;
-    private static final int VISIBLE_DISTANCE =
+    private static final int FULLY_VISIBLE_DISTANCE =
             PROXIMITY_REVEAL + ROW_HEIGHT;
-    private static final int CLOAKED_DISTANCE =
-            VISIBLE_DISTANCE + ROW_HEIGHT;
+    private static final int REVEAL_MULTIPLIER =
+            FULLY_VISIBLE_DISTANCE + ROW_HEIGHT;
 
     private static final int CONTENT_HEIGHT =
-            CLOAKED_DISTANCE + ROW_HEIGHT + BOTTOM_PADDING;
+            REVEAL_MULTIPLIER + ROW_HEIGHT + BOTTOM_PADDING;
 
     private static final int SCROLLBAR_WIDTH = 6;
     private static final int SCROLLBAR_GAP = 8;
@@ -71,7 +71,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private EditBox leaveGrace;
     private EditBox leaveFade;
     private EditBox fullyVisibleDistance;
-    private EditBox fullyCloakedDistance;
+    private EditBox revealDistanceMultiplier;
 
     private Button easingButton;
     private Button visibleWhileAboardButton;
@@ -197,11 +197,11 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                 "screen.aerocloakingcore.server_config.visible_distance"
         );
 
-        fullyCloakedDistance = createNumberBox(
+        revealDistanceMultiplier = createNumberBox(
                 controlX,
                 0,
                 controlWidth,
-                "screen.aerocloakingcore.server_config.cloaked_distance"
+                "screen.aerocloakingcore.server_config.reveal_distance_multiplier"
         );
 
         cancelButton = addRenderableWidget(
@@ -422,7 +422,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                     parseFloat(leaveFade),
                     proximityRevealEnabled,
                     parseDouble(fullyVisibleDistance),
-                    parseDouble(fullyCloakedDistance)
+                    parseDouble(revealDistanceMultiplier)
             ).normalized();
 
             PacketDistributor.sendToServer(new UpdateServerConfigPayload(settings));
@@ -482,9 +482,9 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
             );
         }
 
-        if (fullyCloakedDistance != null) {
-            fullyCloakedDistance.setValue(
-                    formatNumber(normalized.fullyCloakedDistance())
+        if (revealDistanceMultiplier != null) {
+            revealDistanceMultiplier.setValue(
+                    formatNumber(normalized.revealDistanceMultiplier())
             );
         }
 
@@ -531,7 +531,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         setEditable(leaveGrace, editable);
         setEditable(leaveFade, editable);
         setEditable(fullyVisibleDistance, editable);
-        setEditable(fullyCloakedDistance, editable);
+        setEditable(revealDistanceMultiplier, editable);
 
         if (easingButton != null) {
             easingButton.active = editable;
@@ -590,8 +590,8 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         positionWidget(leaveGrace, LEAVE_GRACE);
         positionWidget(leaveFade, LEAVE_FADE);
         positionWidget(proximityRevealButton, PROXIMITY_REVEAL);
-        positionWidget(fullyVisibleDistance, VISIBLE_DISTANCE);
-        positionWidget(fullyCloakedDistance, CLOAKED_DISTANCE);
+        positionWidget(fullyVisibleDistance, FULLY_VISIBLE_DISTANCE);
+        positionWidget(revealDistanceMultiplier, REVEAL_MULTIPLIER);
     }
 
     private void positionWidget(AbstractWidget widget, int contentY) {
@@ -765,13 +765,13 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         );
         drawRowLabel(
                 guiGraphics,
-                VISIBLE_DISTANCE,
+                FULLY_VISIBLE_DISTANCE,
                 "screen.aerocloakingcore.server_config.visible_distance"
         );
         drawRowLabel(
                 guiGraphics,
-                CLOAKED_DISTANCE,
-                "screen.aerocloakingcore.server_config.cloaked_distance"
+                REVEAL_MULTIPLIER,
+                "screen.aerocloakingcore.server_config.reveal_distance_multiplier"
         );
 
         renderContentWidget(transitionDuration, guiGraphics, mouseX, mouseY, partialTick);
@@ -782,7 +782,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         renderContentWidget(leaveFade, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(proximityRevealButton, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(fullyVisibleDistance, guiGraphics, mouseX, mouseY, partialTick);
-        renderContentWidget(fullyCloakedDistance, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(revealDistanceMultiplier, guiGraphics, mouseX, mouseY, partialTick);
 
         guiGraphics.disableScissor();
 
