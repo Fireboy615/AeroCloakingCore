@@ -2,6 +2,7 @@ package net.fireboy.aerocloakingcore.mixin.client;
 
 import dev.engine_room.flywheel.api.visualization.VisualizationManager;
 
+import net.fireboy.aerocloakingcore.client.AlphaSubLevelRenderQueue;
 import net.fireboy.aerocloakingcore.client.FlywheelAlphaRenderState;
 import net.fireboy.aerocloakingcore.client.FlywheelLateRenderContext;
 
@@ -80,6 +81,18 @@ public abstract class FlywheelLevelRendererAlphaMixin {
             Matrix4f projectionMatrix,
             CallbackInfo ci
     ) {
+        /*
+         * Surface Alpha needs its opaque/cutout shell in the main depth buffer
+         * BEFORE Flywheel performs its late OIT pass. Flywheel's OIT framebuffer
+         * attaches/copies that depth, so Create/Flywheel visuals behind an
+         * opaque cloaked block fail the normal depth test instead of showing
+         * through the hull.
+         *
+         * Classic Alpha has no surface pre-pass, so its existing behaviour is
+         * unchanged.
+         */
+        AlphaSubLevelRenderQueue.renderSurfaceDepthPrepass();
+
         if (!FlywheelAlphaRenderState.isAlphaActive() || level == null) {
             return;
         }

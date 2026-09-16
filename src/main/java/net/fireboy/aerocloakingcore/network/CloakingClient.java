@@ -17,7 +17,6 @@ import net.minecraft.world.entity.player.Player;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,6 +33,10 @@ public final class CloakingClient {
     private static volatile CloakingServerSettings SERVER_SETTINGS =
             CloakingServerSettings.DEFAULT;
 
+    /** Runtime transition duration calculated per sublevel from cloak-system RPM. */
+    private static final Map<UUID, Float> TRANSITION_DURATIONS =
+            new ConcurrentHashMap<>();
+
     /** Sublevels present in the most recent server sync. */
     private static final Set<UUID> SERVER_SUBLEVELS =
             ConcurrentHashMap.newKeySet();
@@ -41,8 +44,15 @@ public final class CloakingClient {
     /** The sublevel the local player was aboard/tracking on the previous render check. */
     private static UUID lastViewerSubLevelId = null;
 
-    /** Time the local player most recently left each sublevel. */
-    private static final Map<UUID, Long> VIEWER_LEFT_AT =
+    /**
+     * Per-sublevel viewer reveal state.
+     *
+     * A value of 1 means the normal cloak is fully applied. A value of 0 means
+     * the sublevel is fully revealed to this viewer. Keeping this as one
+     * continuous transition means boarding/leaving can reverse cleanly from
+     * whatever visibility was actually on screen at that moment.
+     */
+    private static final Map<UUID, ViewerVisibilityTransition> VIEWER_VISIBILITY =
             new ConcurrentHashMap<>();
 
     /** Client-side transition state for cloaked sublevels. */
@@ -63,6 +73,7 @@ public final class CloakingClient {
         Set<UUID> incoming = new HashSet<>();
         Set<UUID> known = new HashSet<>(TRANSITIONS.keySet());
         known.addAll(CORE_SETTINGS.keySet());
+        known.addAll(TRANSITION_DURATIONS.keySet());
 
         for (CloakingSyncPayload.Entry entry : entries) {
             UUID id = entry.subLevelId();
@@ -70,6 +81,10 @@ public final class CloakingClient {
 
             incoming.add(id);
             CORE_SETTINGS.put(id, settings);
+            TRANSITION_DURATIONS.put(
+                    id,
+                    Math.max(0.0F, entry.transitionDurationSeconds())
+            );
 
             setTargetStrength(
                     id,
@@ -93,7 +108,8 @@ public final class CloakingClient {
                 ids.stream()
                         .map(id -> new CloakingSyncPayload.Entry(
                                 id,
-                                CloakingCoreSettings.DEFAULT.withCloakStrength(1.0F)
+                                CloakingCoreSettings.DEFAULT.withCloakStrength(1.0F),
+                                SERVER_SETTINGS.transitionDurationSeconds()
                         ))
                         .toList(),
                 SERVER_SETTINGS
@@ -155,6 +171,7 @@ public final class CloakingClient {
             // is unnecessary once the fade-out has completed.
             if (!SERVER_SUBLEVELS.contains(subLevelId)) {
                 CORE_SETTINGS.remove(subLevelId);
+                TRANSITION_DURATIONS.remove(subLevelId);
             }
 
             return 0.0F;
@@ -184,7 +201,10 @@ public final class CloakingClient {
     }
 
     public static float getTransitionDurationSeconds(UUID subLevelId) {
-        return SERVER_SETTINGS.transitionDurationSeconds();
+        return TRANSITION_DURATIONS.getOrDefault(
+                subLevelId,
+                SERVER_SETTINGS.transitionDurationSeconds()
+        );
     }
 
     public static CloakEasing getTransitionEasing(UUID subLevelId) {
@@ -192,24 +212,23 @@ public final class CloakingClient {
     }
 
     public static float getViewerCloakStrength(UUID subLevelId) {
-        float strength = getCloakStrength(subLevelId);
+        float baseStrength = getCloakStrength(subLevelId);
 
-        if (strength <= 0.0F) {
+        if (baseStrength <= 0.0F) {
             return 0.0F;
         }
 
-        if (!visibleWhileAboard(subLevelId)) {
-            return strength;
-        }
-
+        long now = System.nanoTime();
         SubLevel viewerSubLevel = getViewerSubLevel();
 
-        if (viewerSubLevel != null
-                && subLevelId.equals(viewerSubLevel.getUniqueId())) {
-            return 0.0F;
+        updateViewerVisibilityState(viewerSubLevel, now);
+
+        if (!visibleWhileAboard(subLevelId)) {
+            return baseStrength;
         }
 
-        return strength;
+        float viewerStrength = getViewerVisibilityStrength(subLevelId, now);
+        return clamp(baseStrength * viewerStrength);
     }
 
     public static float getViewerCloakStrength(ClientSubLevel subLevel) {
@@ -223,25 +242,29 @@ public final class CloakingClient {
         long now = System.nanoTime();
         SubLevel viewerSubLevel = getViewerSubLevel();
 
-        updateViewerLeaveState(viewerSubLevel, now);
+        updateViewerVisibilityState(viewerSubLevel, now);
 
-        if (visibleWhileAboard(subLevelId)
-                && viewerSubLevel != null
-                && subLevelId.equals(viewerSubLevel.getUniqueId())) {
-            return 0.0F;
-        }
+        float viewerStrength = visibleWhileAboard(subLevelId)
+                ? getViewerVisibilityStrength(subLevelId, now)
+                : 1.0F;
 
         float distanceStrength = getDistanceCloakStrength(subLevel);
-        float leaveStrength = getPostLeaveCloakStrength(subLevelId, now);
 
         return clamp(
                 baseStrength
                         * distanceStrength
-                        * leaveStrength
+                        * viewerStrength
         );
     }
 
-    private static void updateViewerLeaveState(
+    /**
+     * Detects viewer boarding/leaving and starts a new transition from the
+     * exact viewer cloak strength that is currently being rendered.
+     *
+     * Boarding: current -> 0 over Aboard Fade.
+     * Leaving: hold current through Leave Grace, then current -> 1 over Leave Fade.
+     */
+    private static void updateViewerVisibilityState(
             SubLevel viewerSubLevel,
             long now
     ) {
@@ -250,7 +273,7 @@ public final class CloakingClient {
                         ? viewerSubLevel.getUniqueId()
                         : null;
 
-        if (Objects.equals(
+        if (java.util.Objects.equals(
                 currentViewerSubLevelId,
                 lastViewerSubLevelId
         )) {
@@ -258,52 +281,74 @@ public final class CloakingClient {
         }
 
         if (lastViewerSubLevelId != null) {
-            VIEWER_LEFT_AT.put(lastViewerSubLevelId, now);
+            UUID leftSubLevelId = lastViewerSubLevelId;
+            float currentStrength = getViewerVisibilityStrength(
+                    leftSubLevelId,
+                    now
+            );
+
+            VIEWER_VISIBILITY.put(
+                    leftSubLevelId,
+                    new ViewerVisibilityTransition(
+                            currentStrength,
+                            1.0F,
+                            now,
+                            leaveGraceSeconds(leftSubLevelId),
+                            leaveFadeSeconds(leftSubLevelId)
+                    )
+            );
         }
 
         if (currentViewerSubLevelId != null) {
-            VIEWER_LEFT_AT.remove(currentViewerSubLevelId);
+            float currentStrength = getViewerVisibilityStrength(
+                    currentViewerSubLevelId,
+                    now
+            );
+
+            VIEWER_VISIBILITY.put(
+                    currentViewerSubLevelId,
+                    new ViewerVisibilityTransition(
+                            currentStrength,
+                            0.0F,
+                            now,
+                            0.0F,
+                            aboardFadeSeconds(currentViewerSubLevelId)
+                    )
+            );
         }
 
         lastViewerSubLevelId = currentViewerSubLevelId;
     }
 
-    private static float getPostLeaveCloakStrength(
+    /**
+     * Returns the viewer-specific cloak multiplier for a sublevel.
+     *
+     * 1 = normal/full cloak strength, 0 = fully revealed.
+     */
+    private static float getViewerVisibilityStrength(
             UUID subLevelId,
             long now
     ) {
-        Long leftAt = VIEWER_LEFT_AT.get(subLevelId);
+        ViewerVisibilityTransition transition =
+                VIEWER_VISIBILITY.get(subLevelId);
 
-        if (leftAt == null) {
+        if (transition == null) {
             return 1.0F;
         }
 
-        float graceSeconds = leaveGraceSeconds(subLevelId);
-        float fadeSeconds = leaveFadeSeconds(subLevelId);
+        float strength = transition.getStrength(now);
 
-        float secondsSinceLeave =
-                (now - leftAt) / 1_000_000_000.0F;
-
-        if (secondsSinceLeave <= graceSeconds) {
-            return 0.0F;
-        }
-
-        if (fadeSeconds <= 0.0F) {
-            VIEWER_LEFT_AT.remove(subLevelId, leftAt);
+        // Once a leave transition has returned to normal/full cloak, there is
+        // no reason to retain it: the default value is already 1. Boarding
+        // transitions that finish at 0 are retained so a later leave can start
+        // from fully visible instead of snapping back to 1 first.
+        if (transition.targetStrength >= 1.0F
+                && transition.isFinished(now)) {
+            VIEWER_VISIBILITY.remove(subLevelId, transition);
             return 1.0F;
         }
 
-        float progress =
-                (secondsSinceLeave - graceSeconds)
-                        / fadeSeconds;
-
-        if (progress >= 1.0F) {
-            VIEWER_LEFT_AT.remove(subLevelId, leftAt);
-            return 1.0F;
-        }
-
-        progress = clamp(progress);
-        return progress * progress * (3.0F - 2.0F * progress);
+        return strength;
     }
 
     private static float getDistanceCloakStrength(
@@ -371,6 +416,10 @@ public final class CloakingClient {
 
     private static boolean visibleWhileAboard(UUID subLevelId) {
         return SERVER_SETTINGS.visibleWhileAboard();
+    }
+
+    private static float aboardFadeSeconds(UUID subLevelId) {
+        return SERVER_SETTINGS.aboardFadeSeconds();
     }
 
     private static float leaveGraceSeconds(UUID subLevelId) {
@@ -486,6 +535,56 @@ public final class CloakingClient {
 
     private static float clamp(float value) {
         return Math.max(0.0F, Math.min(1.0F, value));
+    }
+
+    private static final class ViewerVisibilityTransition {
+
+        private final float startStrength;
+        private final float targetStrength;
+        private final long startTimeNanos;
+        private final long delayNanos;
+        private final long durationNanos;
+
+        private ViewerVisibilityTransition(
+                float startStrength,
+                float targetStrength,
+                long startTimeNanos,
+                float delaySeconds,
+                float durationSeconds
+        ) {
+            this.startStrength = clamp(startStrength);
+            this.targetStrength = clamp(targetStrength);
+            this.startTimeNanos = startTimeNanos;
+            this.delayNanos = (long) (Math.max(0.0F, delaySeconds)
+                    * 1_000_000_000L);
+            this.durationNanos = (long) (Math.max(0.0F, durationSeconds)
+                    * 1_000_000_000L);
+        }
+
+        private float getStrength(long now) {
+            long elapsed = Math.max(0L, now - startTimeNanos);
+
+            if (elapsed < delayNanos) {
+                return startStrength;
+            }
+
+            if (durationNanos <= 0L) {
+                return targetStrength;
+            }
+
+            float progress = (float) (elapsed - delayNanos)
+                    / (float) durationNanos;
+
+            progress = clamp(progress);
+            float eased = progress * progress * (3.0F - 2.0F * progress);
+
+            return startStrength
+                    + (targetStrength - startStrength) * eased;
+        }
+
+        private boolean isFinished(long now) {
+            return now - startTimeNanos >= delayNanos + durationNanos;
+        }
     }
 
     private static final class CloakTransition {

@@ -10,6 +10,7 @@
   "aerocloakingcore.configuration.transitionEasing": "Transition Easing",
   "aerocloakingcore.configuration.category.viewerVisibility": "Viewer Visibility",
   "aerocloakingcore.configuration.visibleWhileAboard": "Visible While Aboard",
+  "aerocloakingcore.configuration.aboardFadeSeconds": "Aboard Fade Duration (seconds)",
   "aerocloakingcore.configuration.leaveGraceSeconds": "Leave Grace Period (seconds)",
   "aerocloakingcore.configuration.leaveFadeSeconds": "Leave Fade Duration (seconds)",
   "aerocloakingcore.configuration.proximityRevealEnabled": "Proximity Reveal",
@@ -40,12 +41,13 @@
   "screen.aerocloakingcore.server_config.transition_duration": "Transition Duration (s)",
   "screen.aerocloakingcore.server_config.easing": "Transition Easing",
   "screen.aerocloakingcore.server_config.visible_aboard": "Visible While Aboard",
+  "screen.aerocloakingcore.server_config.aboard_fade": "Aboard Fade (s)",
   "screen.aerocloakingcore.server_config.leave_grace": "Leave Grace (s)",
   "screen.aerocloakingcore.server_config.leave_fade": "Leave Fade (s)",
   "screen.aerocloakingcore.server_config.proximity_reveal": "Proximity Reveal",
   "screen.aerocloakingcore.server_config.visible_distance": "Fully Visible Distance",
   "screen.aerocloakingcore.server_config.cloaked_distance": "Fully Cloaked Distance",
-  "screen.aerocloakingcore.server_config.save": "Save to Server",
+  "screen.aerocloakingcore.server_config.save": "Save",
   "screen.aerocloakingcore.server_config.refresh": "Refresh",
   "screen.aerocloakingcore.server_config.loading": "Requesting live settings and permissions...",
   "screen.aerocloakingcore.server_config.saving": "Saving server config...",
@@ -59,5 +61,9 @@
   "screen.aerocloakingcore.server_config.easing.ease_in": "Ease In",
   "screen.aerocloakingcore.server_config.easing.ease_out": "Ease Out",
   "screen.aerocloakingcore.server_config.easing.ease_in_out": "Ease In/Out",
-  "screen.aerocloakingcore.server_config.easing.smoothstep": "Smoothstep"
+  "screen.aerocloakingcore.server_config.easing.smoothstep": "Smoothstep",
+  "screen.aerocloakingcore.server_config.section.transition": "Transition",
+  "screen.aerocloakingcore.server_config.section.viewer": "Viewer Visibility",
+  "screen.aerocloakingcore.server_config.section.proximity": "Proximity Reveal",
+  "screen.aerocloakingcore.server_config.reset": "Reset"
 }

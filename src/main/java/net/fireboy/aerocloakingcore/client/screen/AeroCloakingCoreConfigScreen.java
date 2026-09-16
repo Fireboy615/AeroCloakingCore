@@ -4,11 +4,11 @@ import net.fireboy.aerocloakingcore.client.CloakEasing;
 import net.fireboy.aerocloakingcore.cloak.CloakingServerSettings;
 import net.fireboy.aerocloakingcore.network.RequestServerConfigPayload;
 import net.fireboy.aerocloakingcore.network.ServerConfigClientState;
-import net.fireboy.aerocloakingcore.network.ServerConfigSnapshotPayload;
 import net.fireboy.aerocloakingcore.network.UpdateServerConfigPayload;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
@@ -25,13 +25,49 @@ import java.util.Locale;
  */
 public final class AeroCloakingCoreConfigScreen extends Screen {
 
-    private static final int ROW_COUNT = 8;
-    private static final int ROW_HEIGHT = 28;
     private static final int CONTENT_TOP = 54;
+    private static final int ROW_HEIGHT = 28;
+    private static final int SECTION_HEADER_HEIGHT = 20;
+    private static final int SECTION_GAP = 8;
+    private static final int BOTTOM_PADDING = 8;
+
+    private static final int TRANSITION_HEADER = 0;
+    private static final int TRANSITION_DURATION =
+            TRANSITION_HEADER + SECTION_HEADER_HEIGHT;
+    private static final int TRANSITION_EASING =
+            TRANSITION_DURATION + ROW_HEIGHT;
+
+    private static final int VIEWER_HEADER =
+            TRANSITION_EASING + ROW_HEIGHT + SECTION_GAP;
+    private static final int VISIBLE_ABOARD =
+            VIEWER_HEADER + SECTION_HEADER_HEIGHT;
+    private static final int ABOARD_FADE =
+            VISIBLE_ABOARD + ROW_HEIGHT;
+    private static final int LEAVE_GRACE =
+            ABOARD_FADE + ROW_HEIGHT;
+    private static final int LEAVE_FADE =
+            LEAVE_GRACE + ROW_HEIGHT;
+
+    private static final int PROXIMITY_HEADER =
+            LEAVE_FADE + ROW_HEIGHT + SECTION_GAP;
+    private static final int PROXIMITY_REVEAL =
+            PROXIMITY_HEADER + SECTION_HEADER_HEIGHT;
+    private static final int VISIBLE_DISTANCE =
+            PROXIMITY_REVEAL + ROW_HEIGHT;
+    private static final int CLOAKED_DISTANCE =
+            VISIBLE_DISTANCE + ROW_HEIGHT;
+
+    private static final int CONTENT_HEIGHT =
+            CLOAKED_DISTANCE + ROW_HEIGHT + BOTTOM_PADDING;
+
+    private static final int SCROLLBAR_WIDTH = 6;
+    private static final int SCROLLBAR_GAP = 8;
+    private static final int MIN_THUMB_HEIGHT = 24;
 
     private final Screen parent;
 
     private EditBox transitionDuration;
+    private EditBox aboardFade;
     private EditBox leaveGrace;
     private EditBox leaveFade;
     private EditBox fullyVisibleDistance;
@@ -41,8 +77,8 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private Button visibleWhileAboardButton;
     private Button proximityRevealButton;
 
-    private Button doneButton;
-    private Button refreshButton;
+    private Button cancelButton;
+    private Button resetButton;
     private Button saveButton;
 
     private CloakEasing transitionEasing = CloakEasing.SMOOTHSTEP;
@@ -53,9 +89,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private boolean canEdit;
     private long appliedRevision = -1L;
 
-    private Component status = Component.translatable(
-            "screen.aerocloakingcore.server_config.loading"
-    );
+    private CloakingServerSettings loadedSettings = CloakingServerSettings.DEFAULT;
 
     private int contentLeft;
     private int contentWidth;
@@ -63,8 +97,14 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private int controlX;
     private int controlWidth;
     private int buttonY;
+    private int viewportBottom;
+
     private int contentScroll;
     private int maxScroll;
+
+    private int scrollBarX;
+    private boolean draggingScrollBar;
+    private double scrollDragOffset;
 
     public AeroCloakingCoreConfigScreen(Screen parent) {
         super(Component.translatable(
@@ -78,17 +118,19 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         super.init();
 
         int gap = 12;
-        contentWidth = Math.min(560, width - 40);
-        controlWidth = Math.min(190, Math.max(140, contentWidth / 3));
+        contentWidth = Math.min(560, Math.max(260, width - 64));
+        controlWidth = Math.min(190, Math.max(120, contentWidth * 2 / 5));
         labelWidth = contentWidth - controlWidth - gap;
         contentLeft = (width - contentWidth) / 2;
         controlX = contentLeft + labelWidth + gap;
+        scrollBarX = contentLeft + contentWidth + SCROLLBAR_GAP;
 
         int buttonWidth = 104;
         int buttonGap = 10;
         int buttonsWidth = buttonWidth * 3 + buttonGap * 2;
         int buttonX = (width - buttonsWidth) / 2;
         buttonY = height - 30;
+        viewportBottom = buttonY - 10;
 
         transitionDuration = createNumberBox(
                 controlX,
@@ -113,6 +155,13 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                         )
                         .bounds(controlX, 0, controlWidth, 20)
                         .build()
+        );
+
+        aboardFade = createNumberBox(
+                controlX,
+                0,
+                controlWidth,
+                "screen.aerocloakingcore.server_config.aboard_fade"
         );
 
         leaveGrace = createNumberBox(
@@ -155,18 +204,18 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                 "screen.aerocloakingcore.server_config.cloaked_distance"
         );
 
-        doneButton = addRenderableWidget(
-                Button.builder(CommonComponents.GUI_DONE, button -> onClose())
+        cancelButton = addRenderableWidget(
+                Button.builder(CommonComponents.GUI_CANCEL, button -> onClose())
                         .bounds(buttonX, buttonY, buttonWidth, 20)
                         .build()
         );
 
-        refreshButton = addRenderableWidget(
+        resetButton = addRenderableWidget(
                 Button.builder(
                                 Component.translatable(
-                                        "screen.aerocloakingcore.server_config.refresh"
+                                        "screen.aerocloakingcore.server_config.reset"
                                 ),
-                                button -> requestSnapshot()
+                                button -> resetChanges()
                         )
                         .bounds(
                                 buttonX + buttonWidth + buttonGap,
@@ -198,7 +247,8 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         if (cached.revision() > 0L) {
             applySnapshot(cached);
         } else {
-            applySettings(CloakingServerSettings.DEFAULT);
+            loadedSettings = CloakingServerSettings.DEFAULT.normalized();
+            applySettings(loadedSettings);
         }
 
         updateScrollMetrics();
@@ -273,16 +323,67 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
             double scrollX,
             double scrollY
     ) {
-        if (maxScroll > 0) {
-            int newScroll = clampScroll(contentScroll - (int) Math.signum(scrollY) * 16);
+        if (maxScroll > 0
+                && mouseY >= CONTENT_TOP
+                && mouseY <= viewportBottom) {
+            int newScroll = clampScroll(
+                    contentScroll - (int) Math.round(scrollY * ROW_HEIGHT)
+            );
+
             if (newScroll != contentScroll) {
-                contentScroll = newScroll;
-                positionContentWidgets();
+                setContentScroll(newScroll);
                 return true;
             }
         }
 
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (button == 0 && isInsideScrollBar(mouseX, mouseY) && maxScroll > 0) {
+            int thumbY = getThumbY();
+            int thumbHeight = getThumbHeight();
+
+            if (mouseY >= thumbY && mouseY <= thumbY + thumbHeight) {
+                draggingScrollBar = true;
+                scrollDragOffset = mouseY - thumbY;
+            } else {
+                draggingScrollBar = true;
+                scrollDragOffset = thumbHeight / 2.0;
+                setScrollFromThumb(mouseY - scrollDragOffset);
+            }
+
+            return true;
+        }
+
+        return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseDragged(
+            double mouseX,
+            double mouseY,
+            int button,
+            double dragX,
+            double dragY
+    ) {
+        if (button == 0 && draggingScrollBar) {
+            setScrollFromThumb(mouseY - scrollDragOffset);
+            return true;
+        }
+
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (button == 0 && draggingScrollBar) {
+            draggingScrollBar = false;
+            return true;
+        }
+
+        return super.mouseReleased(mouseX, mouseY, button);
     }
 
     private void requestSnapshot() {
@@ -291,18 +392,19 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         if (minecraft.getConnection() == null) {
             valuesLoaded = false;
             canEdit = false;
-            status = Component.translatable(
-                    "screen.aerocloakingcore.server_config.read_only"
-            );
             updateControlState();
             return;
         }
 
-        status = Component.translatable(
-                "screen.aerocloakingcore.server_config.loading"
-        );
-
         PacketDistributor.sendToServer(new RequestServerConfigPayload());
+    }
+
+    private void resetChanges() {
+        if (!valuesLoaded || !canEdit) {
+            return;
+        }
+
+        applySettings(loadedSettings);
     }
 
     private void save() {
@@ -315,6 +417,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                     parseFloat(transitionDuration),
                     transitionEasing,
                     visibleWhileAboard,
+                    parseFloat(aboardFade),
                     parseFloat(leaveGrace),
                     parseFloat(leaveFade),
                     proximityRevealEnabled,
@@ -322,15 +425,10 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                     parseDouble(fullyCloakedDistance)
             ).normalized();
 
-            status = Component.translatable(
-                    "screen.aerocloakingcore.server_config.saving"
-            );
-
             PacketDistributor.sendToServer(new UpdateServerConfigPayload(settings));
-        } catch (NumberFormatException exception) {
-            status = Component.translatable(
-                    "screen.aerocloakingcore.server_config.invalid_number"
-            );
+        } catch (NumberFormatException ignored) {
+            // Invalid text is simply left unsaved. The numeric filters prevent
+            // almost all invalid input, including multiple decimal points.
         }
     }
 
@@ -347,30 +445,8 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         valuesLoaded = true;
         canEdit = snapshot.permissionKnown() && snapshot.canEdit();
 
-        applySettings(snapshot.settings());
-
-        if (!snapshot.permissionKnown()) {
-            status = Component.translatable(
-                    "screen.aerocloakingcore.server_config.loading"
-            );
-        } else if (snapshot.result() == ServerConfigSnapshotPayload.Result.SAVED) {
-            status = Component.translatable(
-                    "screen.aerocloakingcore.server_config.saved"
-            );
-        } else if (snapshot.result() == ServerConfigSnapshotPayload.Result.DENIED) {
-            status = Component.translatable(
-                    "screen.aerocloakingcore.server_config.denied"
-            );
-        } else if (canEdit) {
-            status = Component.translatable(
-                    "screen.aerocloakingcore.server_config.operator"
-            );
-        } else {
-            status = Component.translatable(
-                    "screen.aerocloakingcore.server_config.read_only"
-            );
-        }
-
+        loadedSettings = snapshot.settings().normalized();
+        applySettings(loadedSettings);
         updateControlState();
     }
 
@@ -385,6 +461,10 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
 
         transitionEasing = normalized.transitionEasing();
         visibleWhileAboard = normalized.visibleWhileAboard();
+
+        if (aboardFade != null) {
+            aboardFade.setValue(formatNumber(normalized.aboardFadeSeconds()));
+        }
 
         if (leaveGrace != null) {
             leaveGrace.setValue(formatNumber(normalized.leaveGraceSeconds()));
@@ -447,6 +527,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         boolean editable = valuesLoaded && canEdit;
 
         setEditable(transitionDuration, editable);
+        setEditable(aboardFade, editable);
         setEditable(leaveGrace, editable);
         setEditable(leaveFade, editable);
         setEditable(fullyVisibleDistance, editable);
@@ -464,6 +545,10 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
             proximityRevealButton.active = editable;
         }
 
+        if (resetButton != null) {
+            resetButton.active = editable;
+        }
+
         if (saveButton != null) {
             saveButton.active = editable;
         }
@@ -478,45 +563,110 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     }
 
     private void updateScrollMetrics() {
-        int viewportHeight = Math.max(80, buttonY - CONTENT_TOP - 12);
-        int contentHeight = ROW_COUNT * ROW_HEIGHT;
-        maxScroll = Math.max(0, contentHeight - viewportHeight);
+        int viewportHeight = getViewportHeight();
+        maxScroll = Math.max(0, CONTENT_HEIGHT - viewportHeight);
         contentScroll = clampScroll(contentScroll);
         positionContentWidgets();
+    }
+
+    private int getViewportHeight() {
+        return Math.max(40, viewportBottom - CONTENT_TOP);
     }
 
     private int clampScroll(int value) {
         return Math.max(0, Math.min(value, maxScroll));
     }
 
+    private void setContentScroll(int newScroll) {
+        contentScroll = clampScroll(newScroll);
+        positionContentWidgets();
+    }
+
     private void positionContentWidgets() {
-        positionRowWidget(transitionDuration, 0);
-        positionRowWidget(easingButton, 1);
-        positionRowWidget(visibleWhileAboardButton, 2);
-        positionRowWidget(leaveGrace, 3);
-        positionRowWidget(leaveFade, 4);
-        positionRowWidget(proximityRevealButton, 5);
-        positionRowWidget(fullyVisibleDistance, 6);
-        positionRowWidget(fullyCloakedDistance, 7);
+        positionWidget(transitionDuration, TRANSITION_DURATION);
+        positionWidget(easingButton, TRANSITION_EASING);
+        positionWidget(visibleWhileAboardButton, VISIBLE_ABOARD);
+        positionWidget(aboardFade, ABOARD_FADE);
+        positionWidget(leaveGrace, LEAVE_GRACE);
+        positionWidget(leaveFade, LEAVE_FADE);
+        positionWidget(proximityRevealButton, PROXIMITY_REVEAL);
+        positionWidget(fullyVisibleDistance, VISIBLE_DISTANCE);
+        positionWidget(fullyCloakedDistance, CLOAKED_DISTANCE);
     }
 
-    private void positionRowWidget(EditBox widget, int row) {
-        if (widget != null) {
-            widget.setX(controlX);
-            widget.setY(rowY(row));
+    private void positionWidget(AbstractWidget widget, int contentY) {
+        if (widget == null) {
+            return;
         }
+
+        int screenY = CONTENT_TOP + contentY - contentScroll;
+        widget.setX(controlX);
+        widget.setY(screenY);
+
+        // Widgets completely outside the clipped list must not remain clickable.
+        widget.visible = screenY + widget.getHeight() > CONTENT_TOP
+                && screenY < viewportBottom;
     }
 
-    private void positionRowWidget(Button widget, int row) {
-        if (widget != null) {
-            widget.setX(controlX);
-            widget.setY(rowY(row));
-            widget.setWidth(controlWidth);
+    private boolean isInsideScrollBar(double mouseX, double mouseY) {
+        return mouseX >= scrollBarX
+                && mouseX <= scrollBarX + SCROLLBAR_WIDTH
+                && mouseY >= CONTENT_TOP
+                && mouseY <= viewportBottom;
+    }
+
+    private int getThumbHeight() {
+        int trackHeight = getViewportHeight();
+
+        if (maxScroll <= 0 || CONTENT_HEIGHT <= 0) {
+            return trackHeight;
         }
+
+        return Math.max(
+                MIN_THUMB_HEIGHT,
+                Math.min(
+                        trackHeight,
+                        (int) Math.round(
+                                trackHeight * (double) trackHeight / CONTENT_HEIGHT
+                        )
+                )
+        );
     }
 
-    private int rowY(int row) {
-        return CONTENT_TOP + row * ROW_HEIGHT - contentScroll;
+    private int getThumbY() {
+        if (maxScroll <= 0) {
+            return CONTENT_TOP;
+        }
+
+        int trackTravel = getViewportHeight() - getThumbHeight();
+        if (trackTravel <= 0) {
+            return CONTENT_TOP;
+        }
+
+        return CONTENT_TOP + (int) Math.round(
+                trackTravel * (double) contentScroll / maxScroll
+        );
+    }
+
+    private void setScrollFromThumb(double thumbTop) {
+        if (maxScroll <= 0) {
+            setContentScroll(0);
+            return;
+        }
+
+        int trackTravel = getViewportHeight() - getThumbHeight();
+        if (trackTravel <= 0) {
+            setContentScroll(0);
+            return;
+        }
+
+        double clampedThumbTop = Math.max(
+                CONTENT_TOP,
+                Math.min(CONTENT_TOP + trackTravel, thumbTop)
+        );
+
+        double fraction = (clampedThumbTop - CONTENT_TOP) / trackTravel;
+        setContentScroll((int) Math.round(fraction * maxScroll));
     }
 
     private static String formatNumber(double value) {
@@ -536,9 +686,9 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
             int mouseY,
             float partialTick
     ) {
-        // Deliberately do not call renderBackground(). That method applies
-        // Minecraft's in-game menu blur. A simple dark overlay keeps the world
-        // visible and sharp behind the config screen.
+        // Do not call renderBackground() or super.render() here. Both routes
+        // activate Minecraft's pause-menu blur. The config intentionally uses
+        // only a dark overlay so all text stays sharp.
         guiGraphics.fill(0, 0, width, height, 0xB0101010);
 
         guiGraphics.drawCenteredString(
@@ -550,70 +700,112 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         );
 
         int scissorLeft = contentLeft - 2;
-        int scissorTop = CONTENT_TOP - 2;
-        int scissorRight = controlX + controlWidth + 2;
-        int scissorBottom = buttonY - 8;
+        int scissorTop = CONTENT_TOP;
+        int scissorRight = contentLeft + contentWidth + 2;
+        int scissorBottom = viewportBottom;
 
-        guiGraphics.enableScissor(scissorLeft, scissorTop, scissorRight, scissorBottom);
+        guiGraphics.enableScissor(
+                scissorLeft,
+                scissorTop,
+                scissorRight,
+                scissorBottom
+        );
 
-        drawLabel(
+        drawSectionHeader(
                 guiGraphics,
-                CONTENT_TOP + 0 * ROW_HEIGHT - contentScroll,
+                TRANSITION_HEADER,
+                "screen.aerocloakingcore.server_config.section.transition"
+        );
+        drawRowLabel(
+                guiGraphics,
+                TRANSITION_DURATION,
                 "screen.aerocloakingcore.server_config.transition_duration"
         );
-        drawLabel(
+        drawRowLabel(
                 guiGraphics,
-                CONTENT_TOP + 1 * ROW_HEIGHT - contentScroll,
+                TRANSITION_EASING,
                 "screen.aerocloakingcore.server_config.easing"
         );
-        drawLabel(
+
+        drawSectionHeader(
                 guiGraphics,
-                CONTENT_TOP + 2 * ROW_HEIGHT - contentScroll,
+                VIEWER_HEADER,
+                "screen.aerocloakingcore.server_config.section.viewer"
+        );
+        drawRowLabel(
+                guiGraphics,
+                VISIBLE_ABOARD,
                 "screen.aerocloakingcore.server_config.visible_aboard"
         );
-        drawLabel(
+        drawRowLabel(
                 guiGraphics,
-                CONTENT_TOP + 3 * ROW_HEIGHT - contentScroll,
+                ABOARD_FADE,
+                "screen.aerocloakingcore.server_config.aboard_fade"
+        );
+        drawRowLabel(
+                guiGraphics,
+                LEAVE_GRACE,
                 "screen.aerocloakingcore.server_config.leave_grace"
         );
-        drawLabel(
+        drawRowLabel(
                 guiGraphics,
-                CONTENT_TOP + 4 * ROW_HEIGHT - contentScroll,
+                LEAVE_FADE,
                 "screen.aerocloakingcore.server_config.leave_fade"
         );
-        drawLabel(
+
+        drawSectionHeader(
                 guiGraphics,
-                CONTENT_TOP + 5 * ROW_HEIGHT - contentScroll,
+                PROXIMITY_HEADER,
+                "screen.aerocloakingcore.server_config.section.proximity"
+        );
+        drawRowLabel(
+                guiGraphics,
+                PROXIMITY_REVEAL,
                 "screen.aerocloakingcore.server_config.proximity_reveal"
         );
-        drawLabel(
+        drawRowLabel(
                 guiGraphics,
-                CONTENT_TOP + 6 * ROW_HEIGHT - contentScroll,
+                VISIBLE_DISTANCE,
                 "screen.aerocloakingcore.server_config.visible_distance"
         );
-        drawLabel(
+        drawRowLabel(
                 guiGraphics,
-                CONTENT_TOP + 7 * ROW_HEIGHT - contentScroll,
+                CLOAKED_DISTANCE,
                 "screen.aerocloakingcore.server_config.cloaked_distance"
         );
 
-        renderWidget(transitionDuration, guiGraphics, mouseX, mouseY, partialTick);
-        renderWidget(easingButton, guiGraphics, mouseX, mouseY, partialTick);
-        renderWidget(visibleWhileAboardButton, guiGraphics, mouseX, mouseY, partialTick);
-        renderWidget(leaveGrace, guiGraphics, mouseX, mouseY, partialTick);
-        renderWidget(leaveFade, guiGraphics, mouseX, mouseY, partialTick);
-        renderWidget(proximityRevealButton, guiGraphics, mouseX, mouseY, partialTick);
-        renderWidget(fullyVisibleDistance, guiGraphics, mouseX, mouseY, partialTick);
-        renderWidget(fullyCloakedDistance, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(transitionDuration, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(easingButton, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(visibleWhileAboardButton, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(aboardFade, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(leaveGrace, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(leaveFade, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(proximityRevealButton, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(fullyVisibleDistance, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(fullyCloakedDistance, guiGraphics, mouseX, mouseY, partialTick);
 
         guiGraphics.disableScissor();
 
-        renderWidget(doneButton, guiGraphics, mouseX, mouseY, partialTick);
-        renderWidget(refreshButton, guiGraphics, mouseX, mouseY, partialTick);
-        renderWidget(saveButton, guiGraphics, mouseX, mouseY, partialTick);
+        drawScrollBar(guiGraphics);
+
+        renderBottomWidget(cancelButton, guiGraphics, mouseX, mouseY, partialTick);
+        renderBottomWidget(resetButton, guiGraphics, mouseX, mouseY, partialTick);
+        renderBottomWidget(saveButton, guiGraphics, mouseX, mouseY, partialTick);
     }
 
-    private void renderWidget(
+    private void renderContentWidget(
+            AbstractWidget widget,
+            GuiGraphics guiGraphics,
+            int mouseX,
+            int mouseY,
+            float partialTick
+    ) {
+        if (widget != null && widget.visible) {
+            widget.render(guiGraphics, mouseX, mouseY, partialTick);
+        }
+    }
+
+    private void renderBottomWidget(
             Button widget,
             GuiGraphics guiGraphics,
             int mouseX,
@@ -625,30 +817,86 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         }
     }
 
-    private void renderWidget(
-            EditBox widget,
+    private void drawSectionHeader(
             GuiGraphics guiGraphics,
-            int mouseX,
-            int mouseY,
-            float partialTick
+            int contentY,
+            String translationKey
     ) {
-        if (widget != null) {
-            widget.render(guiGraphics, mouseX, mouseY, partialTick);
+        int y = CONTENT_TOP + contentY - contentScroll;
+        Component heading = Component.translatable(translationKey);
+
+        guiGraphics.drawString(
+                font,
+                heading,
+                contentLeft,
+                y + 4,
+                0xFFFFFF,
+                false
+        );
+
+        int textEnd = contentLeft + font.width(heading) + 8;
+        int lineY = y + 8;
+        int lineEnd = contentLeft + contentWidth;
+
+        if (textEnd < lineEnd) {
+            guiGraphics.fill(
+                    textEnd,
+                    lineY,
+                    lineEnd,
+                    lineY + 1,
+                    0xFF707070
+            );
         }
     }
 
-    private void drawLabel(
+    private void drawRowLabel(
             GuiGraphics guiGraphics,
-            int y,
+            int contentY,
             String translationKey
     ) {
+        int y = CONTENT_TOP + contentY - contentScroll;
+        Component label = Component.translatable(translationKey);
+        String labelText = label.getString();
+        int availableWidth = Math.max(20, labelWidth - 4);
+
+        if (font.width(labelText) > availableWidth) {
+            String ellipsis = "...";
+            int textWidth = Math.max(0, availableWidth - font.width(ellipsis));
+            labelText = font.plainSubstrByWidth(labelText, textWidth) + ellipsis;
+        }
+
         guiGraphics.drawString(
                 font,
-                Component.translatable(translationKey),
+                labelText,
                 contentLeft,
                 y + 6,
                 0xD0D0D0,
                 false
+        );
+    }
+
+    private void drawScrollBar(GuiGraphics guiGraphics) {
+        int trackTop = CONTENT_TOP;
+        int trackBottom = viewportBottom;
+
+        guiGraphics.fill(
+                scrollBarX,
+                trackTop,
+                scrollBarX + SCROLLBAR_WIDTH,
+                trackBottom,
+                0x70000000
+        );
+
+        int thumbY = getThumbY();
+        int thumbHeight = getThumbHeight();
+        int thumbColor = maxScroll > 0 ? 0xFFB0B0B0 : 0xFF686868;
+
+        guiGraphics.fill(
+                scrollBarX,
+                thumbY,
+                scrollBarX + SCROLLBAR_WIDTH,
+                thumbY + thumbHeight,
+                thumbColor
         );
     }
 

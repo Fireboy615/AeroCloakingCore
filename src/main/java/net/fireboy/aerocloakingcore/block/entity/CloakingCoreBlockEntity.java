@@ -34,14 +34,14 @@ import java.util.UUID;
 /**
  * Create kinetic block entity for the Cloaking Core drive half.
  *
- * Initial balance:
- * - minimum speed: Create MEDIUM speed tier (normally 32 RPM)
- * - base demand at minimum speed: 256 SU
- * - additional demand at minimum speed: 2 SU per non-air sublevel block
- *
- * Create stress naturally scales with RPM. For example, at the normal 32 RPM
- * minimum a 1,000-block sublevel costs 2,256 SU. At 64 RPM that same core
- * costs twice as much, just like other Create stress consumers.
+ * Multi-core prototype balance:
+ * - minimum operating speed: Create MEDIUM speed tier (normally 32 RPM)
+ * - one core at minimum RPM contributes 512 blocks of cloak capacity
+ * - capacity scales with sqrt(RPM / minimum RPM), giving diminishing returns
+ * - ship block load is shared between all cores on the same Sable sublevel
+ * - each core pays 256 base SU at minimum RPM plus 2 SU per assigned block
+ * - the per-block stress portion scales with cloakStrength^2
+ * - Create then naturally multiplies stress impact by actual RPM
  */
 public class CloakingCoreBlockEntity extends KineticBlockEntity
         implements MenuProvider {
@@ -52,11 +52,14 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
     private static final String TAG_LAST_REDSTONE_SIGNAL = "LastRedstoneSignal";
     private static final String TAG_SUBLEVEL_BLOCK_COUNT = "SubLevelBlockCount";
 
-    /** SU consumed at the minimum operating RPM before ship-size scaling. */
+    /** SU consumed at minimum RPM before ship-load scaling. */
     public static final float BASE_SU_AT_MINIMUM_RPM = 256.0F;
 
-    /** Extra SU at the minimum operating RPM for every non-air sublevel block. */
+    /** Extra SU at minimum RPM per assigned ship block at 100% cloak strength. */
     public static final float SU_PER_BLOCK_AT_MINIMUM_RPM = 2.0F;
+
+    /** Cloak capacity supplied by one core exactly at minimum operating RPM. */
+    public static final int CAPACITY_BLOCKS_AT_MINIMUM_RPM = 512;
 
     /** Re-scan the Sable sublevel and its block count once per second. */
     private static final int SUBLEVEL_CHECK_INTERVAL_TICKS = 20;
@@ -81,18 +84,27 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
     private UUID cloakedSubLevelId = null;
     private int subLevelBlockCount = 0;
 
+    /** Ship block load currently assigned to this core by CloakingManager. */
+    private float assignedBlockLoad = 0.0F;
+
+    /** Cached ship-wide values for UI/status. */
+    private int systemCoreCount = 0;
+    private int systemBlockCount = 0;
+    private int systemPotentialCapacity = 0;
+    private int systemOperationalCapacity = 0;
+    private boolean systemCapacitySatisfied = false;
+    private float systemEffectiveRpm = 0.0F;
+    private float systemTransitionDurationSeconds = 0.0F;
+
     // Starts at 19 so a newly loaded core scans on its first server tick.
     private int checkTimer = SUBLEVEL_CHECK_INTERVAL_TICKS - 1;
-
-    /** Last effective power state sent to CloakingManager. */
-    private boolean lastOperationalState = false;
 
     public CloakingCoreBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.CLOAKING_CORE.get(), pos, state);
     }
 
     // ---------------------------------------------------------------------
-    // CREATE KINETICS / STRESS
+    // CREATE KINETICS / CAPACITY / STRESS
     // ---------------------------------------------------------------------
 
     /**
@@ -103,19 +115,72 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         return IRotate.SpeedLevel.MEDIUM.getSpeedValue();
     }
 
-    /**
-     * Exact block count currently used for SU scaling.
-     */
+    public float getCurrentRpm() {
+        return Math.abs(getSpeed());
+    }
+
+    public float getTheoreticalRpm() {
+        return Math.abs(getTheoreticalSpeed());
+    }
+
+    /** Exact non-air block count observed on this core's Sable sublevel. */
     public int getSubLevelBlockCount() {
         return subLevelBlockCount;
     }
 
     /**
-     * SU that would be consumed at the minimum operating speed.
+     * Capacity this core would contribute at its requested/theoretical speed.
+     * This remains non-zero while its Create network is overstressed so stress
+     * demand does not collapse and oscillate on/off.
+     */
+    public int getPotentialCloakCapacityBlocks() {
+        return calculateCapacityForRpm(getTheoreticalRpm());
+    }
+
+    /** Capacity currently available to the cloak system. */
+    public int getOperationalCloakCapacityBlocks() {
+        if (!isOperational()) {
+            return 0;
+        }
+
+        return calculateCapacityForRpm(getCurrentRpm());
+    }
+
+    public int calculateCapacityForRpm(float rpm) {
+        float minimumRpm = Math.max(1.0F, getMinimumRequiredRpm());
+
+        if (rpm + 0.0001F < minimumRpm) {
+            return 0;
+        }
+
+        double multiplier = Math.sqrt(rpm / minimumRpm);
+        return Math.max(
+                0,
+                (int) Math.floor(
+                        CAPACITY_BLOCKS_AT_MINIMUM_RPM * multiplier
+                )
+        );
+    }
+
+    public float getAssignedBlockLoad() {
+        return assignedBlockLoad;
+    }
+
+    /**
+     * SU that this core would consume at the minimum operating RPM.
+     *
+     * Only the variable block-load portion scales with cloak strength. Using a
+     * squared curve makes partial analog cloak values meaningfully cheaper:
+     * 50% cloak pays 25% of the variable block cost, 75% pays 56.25%, etc.
      */
     public float getRequiredSuAtMinimumRpm() {
+        float strength = settings.cloakStrength();
+        float cloakLoadFactor = strength * strength;
+
         return BASE_SU_AT_MINIMUM_RPM
-                + SU_PER_BLOCK_AT_MINIMUM_RPM * subLevelBlockCount;
+                + SU_PER_BLOCK_AT_MINIMUM_RPM
+                * assignedBlockLoad
+                * cloakLoadFactor;
     }
 
     /**
@@ -125,29 +190,154 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
      * demand that caused it to become overstressed.
      */
     public float getCurrentRequiredSu() {
-        return calculateStressApplied() * Math.abs(getTheoreticalSpeed());
+        float minimumRpm = Math.max(1.0F, getMinimumRequiredRpm());
+        float impact = getRequiredSuAtMinimumRpm() / minimumRpm;
+        return impact * getTheoreticalRpm();
     }
 
     /**
-     * Create asks for stress impact in SU/RPM. We calculate that dynamically so
-     * the total SU at the minimum RPM equals our base + per-block requirement.
+     * Create asks for stress impact in SU/RPM. The actual network demand is then
+     * this impact multiplied by RPM, so higher speed provides more cloak
+     * capacity but is naturally more expensive to run.
      */
     @Override
     public float calculateStressApplied() {
         float minimumRpm = Math.max(1.0F, getMinimumRequiredRpm());
         float impact = getRequiredSuAtMinimumRpm() / minimumRpm;
 
-        // KineticBlockEntity persists/caches this value for its network.
         this.lastStressApplied = impact;
         return impact;
     }
 
     /**
-     * Cloaking only operates when Create considers the machine fast enough and
-     * the kinetic network is not overstressed.
+     * Individual-core operating state. Ship-wide capacity is checked separately
+     * by CloakingManager.
      */
     public boolean isOperational() {
         return !isOverStressed() && isSpeedRequirementFulfilled();
+    }
+
+    // ---------------------------------------------------------------------
+    // SYSTEM STATS / MANAGER CALLBACKS
+    // ---------------------------------------------------------------------
+
+    public @Nullable UUID getCloakedSubLevelId() {
+        return cloakedSubLevelId;
+    }
+
+    public int getSystemCoreCount() {
+        return systemCoreCount;
+    }
+
+    public int getSystemBlockCount() {
+        return systemBlockCount;
+    }
+
+    public int getSystemPotentialCapacity() {
+        return systemPotentialCapacity;
+    }
+
+    public int getSystemOperationalCapacity() {
+        return systemOperationalCapacity;
+    }
+
+    public boolean isSystemCapacitySatisfied() {
+        return systemCapacitySatisfied;
+    }
+
+    public float getSystemEffectiveRpm() {
+        return systemEffectiveRpm;
+    }
+
+    public float getSystemTransitionDurationSeconds() {
+        return systemTransitionDurationSeconds;
+    }
+
+    /**
+     * Status codes used by the menu's synced ContainerData.
+     * 0 = no Sable sublevel
+     * 1 = this core below minimum RPM
+     * 2 = this core's Create network overstressed
+     * 3 = ship-wide cloak capacity insufficient
+     * 4 = ready
+     */
+    public int getSystemStatusCode() {
+        if (cloakedSubLevelId == null) {
+            return 0;
+        }
+
+        if (isOverStressed()) {
+            return 2;
+        }
+
+        if (getPotentialCloakCapacityBlocks() <= 0) {
+            return 1;
+        }
+
+        if (!systemCapacitySatisfied) {
+            return 3;
+        }
+
+        return 4;
+    }
+
+    /** Called only by CloakingManager on the server thread. */
+    public void setAssignedBlockLoadFromManager(float assignedBlockLoad) {
+        float normalized = Math.max(0.0F, assignedBlockLoad);
+
+        if (Math.abs(this.assignedBlockLoad - normalized) < 0.01F) {
+            return;
+        }
+
+        this.assignedBlockLoad = normalized;
+
+        // Stress impact changed, so force Create to rebuild/recalculate it.
+        networkDirty = true;
+        setChanged();
+    }
+
+    /** Called only by CloakingManager on the server thread. */
+    public void applySystemSettingsFromManager(CloakingCoreSettings settings) {
+        CloakingCoreSettings normalized = settings.normalized();
+
+        if (normalized.equals(this.settings)) {
+            return;
+        }
+
+        boolean strengthChanged = Math.abs(
+                normalized.cloakStrength() - this.settings.cloakStrength()
+        ) > 0.0001F;
+
+        this.settings = normalized;
+
+        if (strengthChanged) {
+            networkDirty = true;
+        }
+
+        setChanged();
+        sendData();
+    }
+
+    /** Called only by CloakingManager on the server thread. */
+    public void applySystemStatsFromManager(
+            int coreCount,
+            int blockCount,
+            int potentialCapacity,
+            int operationalCapacity,
+            boolean capacitySatisfied,
+            float effectiveRpm,
+            float transitionDurationSeconds
+    ) {
+        this.systemCoreCount = Math.max(0, coreCount);
+        this.systemBlockCount = Math.max(0, blockCount);
+        this.systemPotentialCapacity = Math.max(0, potentialCapacity);
+        this.systemOperationalCapacity = Math.max(0, operationalCapacity);
+        this.systemCapacitySatisfied = capacitySatisfied;
+        this.systemEffectiveRpm = Math.max(0.0F, effectiveRpm);
+        this.systemTransitionDurationSeconds = Math.max(
+                0.0F,
+                transitionDurationSeconds
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -239,7 +429,7 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
 
     public void setRenderMode(CloakRenderMode renderMode) {
         settings = settings.withRenderMode(renderMode);
-        syncCurrentCloakState();
+        publishSettingsToSystem();
         setChanged();
     }
 
@@ -257,7 +447,20 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
 
     private void setEffectiveCloakStrength(float strength) {
         settings = settings.withCloakStrength(strength);
-        syncCurrentCloakState();
+        networkDirty = true;
+        publishSettingsToSystem();
+    }
+
+    private void publishSettingsToSystem() {
+        if (level == null || level.isClientSide || cloakedSubLevelId == null) {
+            return;
+        }
+
+        CloakingManager.setSystemSettings(
+                cloakedSubLevelId,
+                this,
+                settings
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -328,8 +531,15 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
 
         if (!clientPacket) {
             cloakedSubLevelId = null;
+            assignedBlockLoad = 0.0F;
+            systemCoreCount = 0;
+            systemBlockCount = 0;
+            systemPotentialCapacity = 0;
+            systemOperationalCapacity = 0;
+            systemCapacitySatisfied = false;
+            systemEffectiveRpm = 0.0F;
+            systemTransitionDurationSeconds = 0.0F;
             checkTimer = SUBLEVEL_CHECK_INTERVAL_TICKS - 1;
-            lastOperationalState = false;
         }
     }
 
@@ -366,16 +576,17 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
             }
         }
 
-        boolean operationalNow = isOperational();
-        if (operationalNow != lastOperationalState) {
-            lastOperationalState = operationalNow;
-            syncCurrentCloakState();
-        }
-
         checkTimer++;
         if (checkTimer >= SUBLEVEL_CHECK_INTERVAL_TICKS) {
             checkTimer = 0;
             checkSubLevel();
+        }
+
+        // RPM, overstress state and weighted load can all change between the
+        // once-per-second block scans, so refresh the lightweight system math
+        // every server tick.
+        if (cloakedSubLevelId != null) {
+            CloakingManager.updateCore(cloakedSubLevelId, this);
         }
     }
 
@@ -398,7 +609,7 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
                 !Objects.equals(cloakedSubLevelId, newSubLevelId);
 
         if (subLevelChanged && cloakedSubLevelId != null) {
-            CloakingManager.removeCloakedSubLevel(cloakedSubLevelId);
+            CloakingManager.unregisterCore(cloakedSubLevelId, this);
         }
 
         cloakedSubLevelId = newSubLevelId;
@@ -409,33 +620,35 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
 
         if (newBlockCount != subLevelBlockCount) {
             subLevelBlockCount = newBlockCount;
-
-            // Force Create to recalculate this consumer's dynamic stress on
-            // the next kinetic tick.
-            networkDirty = true;
-
             setChanged();
             sendData();
 
             AeroCloakingCore.LOGGER.debug(
-                    "Cloaking Core sub-level {} now contains {} non-air blocks; "
-                            + "minimum-speed demand is {} SU",
+                    "Cloaking Core sub-level {} now contains {} non-air blocks",
                     cloakedSubLevelId,
-                    subLevelBlockCount,
-                    getRequiredSuAtMinimumRpm()
+                    subLevelBlockCount
             );
         }
 
         if (cloakedSubLevelId != null) {
-            syncCurrentCloakState();
+            CloakingManager.updateCore(cloakedSubLevelId, this);
 
             if (subLevelChanged) {
                 AeroCloakingCore.LOGGER.debug(
-                        "Cloaking Core found Sable sub-level: {}",
+                        "Cloaking Core joined cloak system for Sable sub-level {}",
                         cloakedSubLevelId
                 );
             }
         } else if (subLevelChanged) {
+            assignedBlockLoad = 0.0F;
+            systemCoreCount = 0;
+            systemBlockCount = 0;
+            systemPotentialCapacity = 0;
+            systemOperationalCapacity = 0;
+            systemCapacitySatisfied = false;
+            systemEffectiveRpm = 0.0F;
+            systemTransitionDurationSeconds = 0.0F;
+
             AeroCloakingCore.LOGGER.debug(
                     "Cloaking Core is not currently on a Sable sub-level"
             );
@@ -475,30 +688,23 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
     }
 
     // ---------------------------------------------------------------------
-    // CLOAK STATE
+    // CLEANUP
     // ---------------------------------------------------------------------
-
-    private void syncCurrentCloakState() {
-        if (level == null || level.isClientSide || cloakedSubLevelId == null) {
-            return;
-        }
-
-        CloakingCoreSettings effectiveSettings = isOperational()
-                ? settings
-                : settings.withCloakStrength(0.0F);
-
-        CloakingManager.setCloakedSubLevel(
-                cloakedSubLevelId,
-                effectiveSettings
-        );
-    }
 
     private void clearCloakedSubLevel() {
         if (cloakedSubLevelId != null) {
-            CloakingManager.removeCloakedSubLevel(cloakedSubLevelId);
+            CloakingManager.unregisterCore(cloakedSubLevelId, this);
             cloakedSubLevelId = null;
         }
 
+        assignedBlockLoad = 0.0F;
+        systemCoreCount = 0;
+        systemBlockCount = 0;
+        systemPotentialCapacity = 0;
+        systemOperationalCapacity = 0;
+        systemCapacitySatisfied = false;
+        systemEffectiveRpm = 0.0F;
+        systemTransitionDurationSeconds = 0.0F;
         checkTimer = SUBLEVEL_CHECK_INTERVAL_TICKS - 1;
     }
 

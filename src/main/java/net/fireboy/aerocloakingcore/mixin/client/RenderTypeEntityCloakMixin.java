@@ -2,7 +2,6 @@ package net.fireboy.aerocloakingcore.mixin.client;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 
-import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.client.EntityCloakRenderState;
 
 import net.minecraft.client.renderer.RenderType;
@@ -58,8 +57,7 @@ public abstract class RenderTypeEntityCloakMixin {
 
         aerocloakingcore$modifiedEntityAlphaState = false;
 
-        if (EntityCloakRenderState.getRenderMode()
-                != CloakRenderMode.ALPHA) {
+        if (!EntityCloakRenderState.getRenderMode().isAlpha()) {
             return;
         }
 

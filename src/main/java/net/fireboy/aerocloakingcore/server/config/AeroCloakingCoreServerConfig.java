@@ -19,6 +19,7 @@ public final class AeroCloakingCoreServerConfig {
     public static final ModConfigSpec.EnumValue<CloakEasing> TRANSITION_EASING;
 
     public static final ModConfigSpec.BooleanValue VISIBLE_WHILE_ABOARD;
+    public static final ModConfigSpec.DoubleValue ABOARD_FADE_SECONDS;
     public static final ModConfigSpec.DoubleValue LEAVE_GRACE_SECONDS;
     public static final ModConfigSpec.DoubleValue LEAVE_FADE_SECONDS;
 
@@ -50,6 +51,10 @@ public final class AeroCloakingCoreServerConfig {
         VISIBLE_WHILE_ABOARD = builder
                 .comment("Players aboard/tracking a cloaked sublevel see it fully visible.")
                 .define("visibleWhileAboard", true);
+
+        ABOARD_FADE_SECONDS = builder
+                .comment("Seconds used to fade a cloaked sublevel back in when the viewer boards/tracks it.")
+                .defineInRange("aboardFadeSeconds", 1.0, 0.0, 60.0);
 
         LEAVE_GRACE_SECONDS = builder
                 .comment("Seconds a sublevel remains fully visible after a player leaves it.")
@@ -93,6 +98,11 @@ public final class AeroCloakingCoreServerConfig {
                 TRANSITION_DURATION_SECONDS.get().floatValue()
         );
 
+        float aboardFade = finiteOr(
+                normalized.aboardFadeSeconds(),
+                ABOARD_FADE_SECONDS.get().floatValue()
+        );
+
         float leaveGrace = finiteOr(
                 normalized.leaveGraceSeconds(),
                 LEAVE_GRACE_SECONDS.get().floatValue()
@@ -114,6 +124,7 @@ public final class AeroCloakingCoreServerConfig {
         );
 
         transitionDuration = clamp(transitionDuration, 0.0F, 30.0F);
+        aboardFade = clamp(aboardFade, 0.0F, 60.0F);
         leaveGrace = clamp(leaveGrace, 0.0F, 60.0F);
         leaveFade = clamp(leaveFade, 0.0F, 60.0F);
         fullyVisible = clamp(fullyVisible, 0.0, 128.0);
@@ -131,6 +142,7 @@ public final class AeroCloakingCoreServerConfig {
         );
 
         VISIBLE_WHILE_ABOARD.set(normalized.visibleWhileAboard());
+        ABOARD_FADE_SECONDS.set((double) aboardFade);
         LEAVE_GRACE_SECONDS.set((double) leaveGrace);
         LEAVE_FADE_SECONDS.set((double) leaveFade);
 

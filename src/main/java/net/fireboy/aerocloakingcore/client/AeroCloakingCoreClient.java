@@ -13,12 +13,8 @@ import com.mojang.blaze3d.vertex.VertexFormat;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
-import dev.engine_room.flywheel.lib.visualization.SimpleBlockEntityVisualizer;
 
 import net.fireboy.aerocloakingcore.AeroCloakingCore;
-import net.fireboy.aerocloakingcore.block.entity.ModBlockEntities;
-import net.fireboy.aerocloakingcore.client.render.CloakingCoreModels;
-import net.fireboy.aerocloakingcore.client.render.CloakingCoreVisual;
 import net.fireboy.aerocloakingcore.client.screen.AeroCloakingCoreConfigScreen;
 import net.fireboy.aerocloakingcore.client.screen.CloakingCoreScreen;
 import net.fireboy.aerocloakingcore.menu.ModMenus;
@@ -38,7 +34,6 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
-import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 import net.neoforged.neoforge.client.event.RegisterMenuScreensEvent;
 import net.neoforged.neoforge.client.event.RenderHighlightEvent;
@@ -64,10 +59,6 @@ public final class AeroCloakingCoreClient {
             IEventBus modEventBus,
             ModContainer modContainer
     ) {
-        // Load the rotor partial models on the client before they are needed.
-        CloakingCoreModels.init();
-
-        modEventBus.addListener(this::clientSetup);
         modEventBus.addListener(this::registerScreens);
 
         modContainer.registerExtensionPoint(
@@ -77,15 +68,6 @@ public final class AeroCloakingCoreClient {
         );
 
         NeoForge.EVENT_BUS.addListener(this::onBlockHighlight);
-    }
-
-    private void clientSetup(FMLClientSetupEvent event) {
-        event.enqueueWork(() ->
-                SimpleBlockEntityVisualizer
-                        .builder(ModBlockEntities.CLOAKING_CORE.get())
-                        .factory(CloakingCoreVisual::new)
-                        .apply()
-        );
     }
 
     private void registerScreens(RegisterMenuScreensEvent event) {
@@ -126,8 +108,7 @@ public final class AeroCloakingCoreClient {
         }
 
         // DITHER keeps the normal Minecraft/Sable target outline.
-        if (CloakingClient.getRenderMode(subLevel)
-                != CloakRenderMode.ALPHA) {
+        if (!CloakingClient.getRenderMode(subLevel).isAlpha()) {
             return;
         }
 

@@ -81,7 +81,7 @@ public abstract class FlywheelBlockEntityStorageMixin {
 
         if (renderMode == CloakRenderMode.DITHER) {
             signal = strength;
-        } else if (renderMode == CloakRenderMode.ALPHA
+        } else if (renderMode.isAlpha()
                 && strength > 0.0001F) {
             signal = -strength;
 

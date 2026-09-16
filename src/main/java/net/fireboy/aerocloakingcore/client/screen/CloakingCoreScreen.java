@@ -5,6 +5,7 @@ import net.fireboy.aerocloakingcore.cloak.CloakingCoreSettings;
 import net.fireboy.aerocloakingcore.menu.CloakingCoreMenu;
 import net.fireboy.aerocloakingcore.network.UpdateCloakingCoreLinkFrequencyPayload;
 import net.fireboy.aerocloakingcore.network.UpdateCloakingCoreSettingsPayload;
+
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.Button;
@@ -16,8 +17,10 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
+
 import net.neoforged.neoforge.network.PacketDistributor;
 
+import java.util.Locale;
 import java.util.function.DoubleConsumer;
 import java.util.function.DoubleFunction;
 
@@ -38,7 +41,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         super(menu, playerInventory, title);
 
         imageWidth = 300;
-        imageHeight = 235;
+        imageHeight = 294;
 
         CloakingCoreSettings settings = menu.getInitialSettings();
         cloakStrength = settings.cloakStrength();
@@ -95,7 +98,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                                 CommonComponents.GUI_DONE,
                                 button -> saveAndClose()
                         )
-                        .bounds(x, topPos + 122, halfWidth, 20)
+                        .bounds(x, topPos + 185, halfWidth, 20)
                         .build()
         );
 
@@ -104,7 +107,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                                 CommonComponents.GUI_CANCEL,
                                 button -> onClose()
                         )
-                        .bounds(rightX, topPos + 122, halfWidth, 20)
+                        .bounds(rightX, topPos + 185, halfWidth, 20)
                         .build()
         );
     }
@@ -219,13 +222,15 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 0xFFFFFF
         );
 
+        drawSystemStats(guiGraphics);
+
         guiGraphics.drawCenteredString(
                 font,
                 Component.translatable(
                         "screen.aerocloakingcore.cloaking_core.link_frequency"
                 ),
                 imageWidth / 2,
-                85,
+                146,
                 0xD0D0D0
         );
 
@@ -235,7 +240,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                         "screen.aerocloakingcore.cloaking_core.redstone_hint"
                 ),
                 imageWidth / 2,
-                116,
+                177,
                 0xA0A0A0
         );
 
@@ -243,10 +248,104 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 font,
                 Component.translatable("container.inventory"),
                 69,
-                141,
+                207,
                 0xA0A0A0,
                 false
         );
+    }
+
+    private void drawSystemStats(GuiGraphics guiGraphics) {
+        int left = 20;
+        int right = imageWidth - 20;
+
+        // Small divider so the live Create-system readout is visually separate
+        // from the editable cloak controls above it.
+        guiGraphics.fill(left, 84, right, 85, 0xFF505050);
+
+        guiGraphics.drawString(
+                font,
+                Component.literal("Status: " + statusText(menu.getSystemStatus())),
+                left,
+                89,
+                statusColor(menu.getSystemStatus()),
+                false
+        );
+
+        guiGraphics.drawString(
+                font,
+                Component.literal(String.format(
+                        Locale.ROOT,
+                        "Ship: %,d blocks   Cores: %d",
+                        menu.getSystemBlocks(),
+                        menu.getSystemCoreCount()
+                )),
+                left,
+                100,
+                0xD0D0D0,
+                false
+        );
+
+        guiGraphics.drawString(
+                font,
+                Component.literal(String.format(
+                        Locale.ROOT,
+                        "This core: %.1f RPM   Cap: %,d   Load: %,d",
+                        menu.getRpm(),
+                        menu.getCorePotentialCapacity(),
+                        menu.getAssignedBlocks()
+                )),
+                left,
+                111,
+                0xD0D0D0,
+                false
+        );
+
+        guiGraphics.drawString(
+                font,
+                Component.literal(String.format(
+                        Locale.ROOT,
+                        "System cap: %,d / %,d   Core stress: %,d SU",
+                        menu.getSystemOperationalCapacity(),
+                        menu.getSystemBlocks(),
+                        menu.getCurrentSu()
+                )),
+                left,
+                122,
+                0xD0D0D0,
+                false
+        );
+
+        guiGraphics.drawString(
+                font,
+                Component.literal(String.format(
+                        Locale.ROOT,
+                        "Cloak transition: %.2fs",
+                        menu.getTransitionSeconds()
+                )),
+                left,
+                133,
+                0xA0A0A0,
+                false
+        );
+    }
+
+    private static String statusText(int status) {
+        return switch (status) {
+            case 1 -> "Core below minimum RPM";
+            case 2 -> "Core network overstressed";
+            case 3 -> "Insufficient ship capacity";
+            case 4 -> "Ready";
+            default -> "No Sable sublevel";
+        };
+    }
+
+    private static int statusColor(int status) {
+        return switch (status) {
+            case 4 -> 0xD0D0D0;
+            case 3 -> 0xFFCC66;
+            case 1, 2 -> 0xFF8888;
+            default -> 0xA0A0A0;
+        };
     }
 
     @Override
@@ -273,12 +372,12 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         );
 
         // Frequency slot frames.
-        drawSlotFrame(guiGraphics, 127, 96);
-        drawSlotFrame(guiGraphics, 157, 96);
+        drawSlotFrame(guiGraphics, 127, 157);
+        drawSlotFrame(guiGraphics, 157, 157);
 
         // Player inventory slot frames.
         int inventoryX = 69;
-        int inventoryY = 151;
+        int inventoryY = 217;
 
         for (int row = 0; row < 3; row++) {
             for (int column = 0; column < 9; column++) {
@@ -294,7 +393,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
             drawSlotFrame(
                     guiGraphics,
                     inventoryX + column * 18,
-                    209
+                    275
             );
         }
     }
@@ -322,7 +421,8 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
     private static Component renderModeName(CloakRenderMode mode) {
         return switch (mode) {
             case DITHER -> Component.literal("Dither");
-            case ALPHA -> Component.literal("Alpha");
+            case ALPHA -> Component.literal("Alpha (Classic)");
+            case ALPHA_SURFACE -> Component.literal("Alpha (Surface)");
         };
     }
 

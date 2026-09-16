@@ -8,11 +8,15 @@ import com.mojang.blaze3d.vertex.VertexFormat;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.VanillaSubLevelRenderDispatcher;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
 
+import net.fireboy.aerocloakingcore.network.CloakingClient;
+
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
 
 import org.joml.Matrix4f;
+
+import org.lwjgl.opengl.GL11C;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -50,6 +54,14 @@ public final class AlphaSubLevelRenderQueue {
             Set<RenderType>
             > QUEUED_LAYERS =
             new IdentityHashMap<>();
+
+    /**
+     * Surface-alpha depth is rendered separately immediately before Flywheel's
+     * late alpha pass. That makes the main depth buffer available to Flywheel
+     * so embedded Create/Flywheel visuals behind an opaque cloaked hull are
+     * rejected instead of showing through it.
+     */
+    private static boolean surfaceDepthPrepassRendered;
 
     private AlphaSubLevelRenderQueue() {
     }
@@ -120,13 +132,20 @@ public final class AlphaSubLevelRenderQueue {
     }
 
     /**
-     * Replays each captured layer using the same type of state Minecraft and
-     * Sable would have used at the original terrain pass.
+     * Writes only ALPHA_SURFACE's opaque/cutout shell into the main depth
+     * buffer. This is intentionally separated from the colour replay so it can
+     * run immediately before Flywheel's late alpha pass.
+     *
+     * Translucent terrain is excluded, preserving the desired behaviour where
+     * glass/water can still reveal geometry behind them.
      */
-    public static void renderQueued() {
+    public static void renderSurfaceDepthPrepass() {
+        if (surfaceDepthPrepassRendered || QUEUE.isEmpty()) {
+            return;
+        }
 
-        // Preserve the late-frame globals so clouds/weather/debug rendering
-        // continue with exactly the state they had before our replay.
+        surfaceDepthPrepassRendered = true;
+
         float[] lateShaderColor =
                 RenderSystem.getShaderColor().clone();
 
@@ -150,60 +169,134 @@ public final class AlphaSubLevelRenderQueue {
 
         try {
             for (DeferredSubLevelAlphaRender deferred : QUEUE) {
+                CloakRenderMode mode = CloakingClient.getRenderMode(
+                        deferred.renderData().getSubLevel()
+                );
+
+                if (!mode.usesSurfaceDepthPrepass()
+                        || !isDepthOccludingLayer(deferred.renderType())) {
+                    continue;
+                }
+
                 restoreCapturedGlobals(deferred);
-                renderLayer(deferred);
+                renderLayer(deferred, false, true);
             }
         } finally {
-            /*
-             * Restore the late-frame RenderSystem globals. Shader instances
-             * themselves are cleared per layer below.
-             */
-            RenderSystem.setShaderColor(
-                    lateShaderColor[0],
-                    lateShaderColor[1],
-                    lateShaderColor[2],
-                    lateShaderColor[3]
-            );
-
-            RenderSystem.setShaderGlintAlpha(
-                    lateShaderGlintAlpha
-            );
-
-            RenderSystem.setShaderFogStart(
-                    lateFogStart
-            );
-
-            RenderSystem.setShaderFogEnd(
-                    lateFogEnd
-            );
-
-            RenderSystem.setShaderFogColor(
-                    lateFogColor[0],
-                    lateFogColor[1],
-                    lateFogColor[2],
-                    lateFogColor[3]
-            );
-
-            RenderSystem.setShaderFogShape(
-                    lateFogShape
-            );
-
-            RenderSystem.setTextureMatrix(
+            restoreLateGlobals(
+                    lateShaderColor,
+                    lateShaderGlintAlpha,
+                    lateFogStart,
+                    lateFogEnd,
+                    lateFogColor,
+                    lateFogShape,
                     lateTextureMatrix
             );
+        }
+    }
 
-            Minecraft.getInstance()
-                    .getMainRenderTarget()
-                    .bindWrite(false);
+    /**
+     * Replays the captured ALPHA terrain colour layers.
+     *
+     * Surface alpha's depth pre-pass normally ran immediately before the late
+     * Flywheel pass. The fallback call here keeps Surface Alpha correct even if
+     * Flywheel has nothing to render in a particular frame.
+     */
+    public static void renderQueued() {
+        renderSurfaceDepthPrepass();
 
-            RenderSystem.depthMask(true);
-            VertexBuffer.unbind();
+        float[] lateShaderColor =
+                RenderSystem.getShaderColor().clone();
+
+        float lateShaderGlintAlpha =
+                RenderSystem.getShaderGlintAlpha();
+
+        float lateFogStart =
+                RenderSystem.getShaderFogStart();
+
+        float lateFogEnd =
+                RenderSystem.getShaderFogEnd();
+
+        float[] lateFogColor =
+                RenderSystem.getShaderFogColor().clone();
+
+        FogShape lateFogShape =
+                RenderSystem.getShaderFogShape();
+
+        Matrix4f lateTextureMatrix =
+                new Matrix4f(RenderSystem.getTextureMatrix());
+
+        try {
+            /*
+             * Classic ALPHA keeps its existing depth-writing colour pass.
+             * ALPHA_SURFACE leaves depth untouched here because its opaque/
+             * cutout shell is already in the depth buffer.
+             */
+            for (DeferredSubLevelAlphaRender deferred : QUEUE) {
+                restoreCapturedGlobals(deferred);
+
+                CloakRenderMode mode = CloakingClient.getRenderMode(
+                        deferred.renderData().getSubLevel()
+                );
+
+                boolean writeDepth = !mode.usesSurfaceDepthPrepass();
+                renderLayer(deferred, true, writeDepth);
+            }
+        } finally {
+            restoreLateGlobals(
+                    lateShaderColor,
+                    lateShaderGlintAlpha,
+                    lateFogStart,
+                    lateFogEnd,
+                    lateFogColor,
+                    lateFogShape,
+                    lateTextureMatrix
+            );
         }
     }
 
     public static void clear() {
         QUEUE.clear();
         QUEUED_LAYERS.clear();
+        surfaceDepthPrepassRendered = false;
+    }
+
+    private static void restoreLateGlobals(
+            float[] shaderColor,
+            float shaderGlintAlpha,
+            float fogStart,
+            float fogEnd,
+            float[] fogColor,
+            FogShape fogShape,
+            Matrix4f textureMatrix
+    ) {
+        RenderSystem.setShaderColor(
+                shaderColor[0],
+                shaderColor[1],
+                shaderColor[2],
+                shaderColor[3]
+        );
+
+        RenderSystem.setShaderGlintAlpha(shaderGlintAlpha);
+        RenderSystem.setShaderFogStart(fogStart);
+        RenderSystem.setShaderFogEnd(fogEnd);
+
+        RenderSystem.setShaderFogColor(
+                fogColor[0],
+                fogColor[1],
+                fogColor[2],
+                fogColor[3]
+        );
+
+        RenderSystem.setShaderFogShape(fogShape);
+        RenderSystem.setTextureMatrix(textureMatrix);
+
+        Minecraft.getInstance()
+                .getMainRenderTarget()
+                .bindWrite(false);
+
+        GL11C.glColorMask(true, true, true, true);
+        RenderSystem.depthMask(true);
+        VertexBuffer.unbind();
     }
 
     private static void restoreCapturedGlobals(
@@ -245,7 +338,9 @@ public final class AlphaSubLevelRenderQueue {
     }
 
     private static void renderLayer(
-            DeferredSubLevelAlphaRender deferred
+            DeferredSubLevelAlphaRender deferred,
+            boolean writeColor,
+            boolean writeDepth
     ) {
         RenderType layer =
                 deferred.renderType();
@@ -269,7 +364,13 @@ public final class AlphaSubLevelRenderQueue {
              * Keeping depth writes preserves self-occlusion within the moving
              * sublevel, which is required by the working water/cloud solution.
              */
-            RenderSystem.depthMask(true);
+            GL11C.glColorMask(
+                    writeColor,
+                    writeColor,
+                    writeColor,
+                    writeColor
+            );
+            RenderSystem.depthMask(writeDepth);
 
             ShaderInstance shader =
                     RenderSystem.getShader();
@@ -353,7 +454,25 @@ public final class AlphaSubLevelRenderQueue {
                     .getMainRenderTarget()
                     .bindWrite(false);
 
+            GL11C.glColorMask(true, true, true, true);
             RenderSystem.depthMask(true);
         }
     }
+
+    private static boolean isDepthOccludingLayer(RenderType layer) {
+        /*
+         * Known opaque/alpha-tested chunk layers. Clear glass can use a cutout
+         * layer: its transparent texels are discarded by the normal shader, so
+         * only visible glass texels write depth and the room remains visible
+         * through the clear pixels.
+         *
+         * Translucent and tripwire are deliberately excluded. This keeps
+         * stained glass, water and other genuinely translucent materials from
+         * becoming solid depth blockers.
+         */
+        return layer == RenderType.solid()
+                || layer == RenderType.cutout()
+                || layer == RenderType.cutoutMipped();
+    }
 }
+

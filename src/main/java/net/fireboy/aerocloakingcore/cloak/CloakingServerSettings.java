@@ -11,6 +11,7 @@ public record CloakingServerSettings(
         float transitionDurationSeconds,
         CloakEasing transitionEasing,
         boolean visibleWhileAboard,
+        float aboardFadeSeconds,
         float leaveGraceSeconds,
         float leaveFadeSeconds,
         boolean proximityRevealEnabled,
@@ -22,6 +23,7 @@ public record CloakingServerSettings(
             3.0F,
             CloakEasing.SMOOTHSTEP,
             true,
+            1.0F,
             2.0F,
             2.0F,
             true,
@@ -34,6 +36,7 @@ public record CloakingServerSettings(
                 AeroCloakingCoreServerConfig.TRANSITION_DURATION_SECONDS.get().floatValue(),
                 AeroCloakingCoreServerConfig.TRANSITION_EASING.get(),
                 AeroCloakingCoreServerConfig.VISIBLE_WHILE_ABOARD.get(),
+                AeroCloakingCoreServerConfig.ABOARD_FADE_SECONDS.get().floatValue(),
                 AeroCloakingCoreServerConfig.LEAVE_GRACE_SECONDS.get().floatValue(),
                 AeroCloakingCoreServerConfig.LEAVE_FADE_SECONDS.get().floatValue(),
                 AeroCloakingCoreServerConfig.PROXIMITY_REVEAL_ENABLED.get(),
@@ -54,6 +57,7 @@ public record CloakingServerSettings(
                 clamp(transitionDurationSeconds, 0.0F, 30.0F),
                 transitionEasing == null ? CloakEasing.SMOOTHSTEP : transitionEasing,
                 visibleWhileAboard,
+                clamp(aboardFadeSeconds, 0.0F, 60.0F),
                 clamp(leaveGraceSeconds, 0.0F, 60.0F),
                 clamp(leaveFadeSeconds, 0.0F, 60.0F),
                 proximityRevealEnabled,
@@ -68,6 +72,7 @@ public record CloakingServerSettings(
         buffer.writeFloat(value.transitionDurationSeconds());
         buffer.writeVarInt(value.transitionEasing().ordinal());
         buffer.writeBoolean(value.visibleWhileAboard());
+        buffer.writeFloat(value.aboardFadeSeconds());
         buffer.writeFloat(value.leaveGraceSeconds());
         buffer.writeFloat(value.leaveFadeSeconds());
         buffer.writeBoolean(value.proximityRevealEnabled());
@@ -80,6 +85,7 @@ public record CloakingServerSettings(
                 buffer.readFloat(),
                 enumByOrdinal(CloakEasing.values(), buffer.readVarInt(), CloakEasing.SMOOTHSTEP),
                 buffer.readBoolean(),
+                buffer.readFloat(),
                 buffer.readFloat(),
                 buffer.readFloat(),
                 buffer.readBoolean(),
