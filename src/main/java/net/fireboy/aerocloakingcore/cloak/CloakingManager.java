@@ -27,9 +27,9 @@ import java.util.UUID;
  * - receives a share of the ship's block load for stress calculations, and
  * - mirrors the same cloak strength/render mode settings.
  *
- * This deliberately keeps the first multi-core implementation simple: any
- * core may change the shared settings. Redstone-control arbitration can be
- * refined later once the pooled capacity/stress behaviour has been tuned.
+ * Any core may currently change the shared cloak settings. Redstone-control
+ * arbitration is still intentionally left separate from the capacity/stress
+ * model so the mechanical balance can be tested first.
  */
 @EventBusSubscriber(modid = AeroCloakingCore.MOD_ID)
 public final class CloakingManager {
@@ -40,6 +40,21 @@ public final class CloakingManager {
      * returns; slower operational systems cloak more slowly.
      */
     public static final float CLOAK_SPEED_REFERENCE_RPM = 64.0F;
+
+    /** Ship-size reveal scaling is referenced to a 256-block sublevel. */
+    public static final float REVEAL_REFERENCE_BLOCKS = 256.0F;
+
+    /** Extra concealment starts only once the average system RPM exceeds 128. */
+    public static final float REVEAL_BONUS_START_RPM = 128.0F;
+
+    /** 256 RPM is treated as the practical maximum concealment-quality speed. */
+    public static final float REVEAL_BONUS_MAX_RPM = 256.0F;
+
+    /**
+     * At 256 average RPM, retain 10% of the size-based reveal gap instead of
+     * collapsing it all the way onto the fully-visible distance.
+     */
+    public static final float MIN_REVEAL_GAP_MULTIPLIER = 0.10F;
 
     private static final Map<UUID, CloakSystem> SYSTEMS = new LinkedHashMap<>();
 
@@ -166,9 +181,11 @@ public final class CloakingManager {
         int blockCount = 0;
         int totalPotentialCapacity = 0;
         int totalOperationalCapacity = 0;
+        int potentialContributingCoreCount = 0;
+        int operationalContributingCoreCount = 0;
 
-        double operationalRpmWeightedSum = 0.0;
-        double potentialRpmWeightedSum = 0.0;
+        double operationalRpmSum = 0.0;
+        double potentialRpmSum = 0.0;
 
         for (CloakingCoreBlockEntity core : system.cores.values()) {
             blockCount = Math.max(blockCount, core.getSubLevelBlockCount());
@@ -179,25 +196,44 @@ public final class CloakingManager {
             totalPotentialCapacity += potentialCapacity;
             totalOperationalCapacity += operationalCapacity;
 
-            float theoreticalRpm = core.getTheoreticalRpm();
-            float runningRpm = core.getCurrentRpm();
-
             if (potentialCapacity > 0) {
-                potentialRpmWeightedSum += theoreticalRpm * potentialCapacity;
+                potentialContributingCoreCount++;
+                potentialRpmSum += core.getTheoreticalRpm();
             }
 
             if (operationalCapacity > 0) {
-                operationalRpmWeightedSum += runningRpm * operationalCapacity;
+                operationalContributingCoreCount++;
+                operationalRpmSum += core.getCurrentRpm();
             }
         }
 
         int coreCount = system.cores.size();
 
         /*
-         * Stress load is distributed by potential cloak capacity. A faster core
-         * therefore takes a larger share of the ship and pays a larger variable
-         * stress cost. If every core is below minimum RPM, divide the load evenly
-         * so a large ship still presents a meaningful spin-up load.
+         * Multi-core SU efficiency is intentionally based on powered/potential
+         * contributors, not just blocks physically placed on the ship. A dead
+         * 0-RPM core therefore cannot be spammed for a free efficiency bonus.
+         *
+         * 1 core  = 100%
+         * 2 cores = 95%
+         * 3 cores = 90%
+         * 4 cores = 85%
+         * 5 cores = 80%
+         * 6+      = 75%
+         */
+        float efficiencyMultiplier = calculateEfficiencyMultiplier(
+                potentialContributingCoreCount
+        );
+
+        /*
+         * Load is distributed in proportion to each core's capacity. Because
+         * capacity itself is linear up to 128 RPM, faster cores naturally take
+         * more of the ship load until their 256-block cap is reached.
+         *
+         * If capacity is insufficient, assigned load may exceed a core's own
+         * capacity. That is deliberate: an oversized ship still presents the
+         * full attempted cloak stress instead of becoming cheaper just because
+         * it cannot currently be cloaked.
          */
         for (CloakingCoreBlockEntity core : system.cores.values()) {
             float assignedBlocks;
@@ -212,27 +248,45 @@ public final class CloakingManager {
                         : 0.0F;
             }
 
-            core.setAssignedBlockLoadFromManager(assignedBlocks);
+            core.applySystemLoadFromManager(
+                    assignedBlocks,
+                    efficiencyMultiplier
+            );
         }
 
         boolean capacitySatisfied = blockCount > 0
                 && totalOperationalCapacity >= blockCount;
 
+        /*
+         * Cloak quality uses the plain arithmetic mean RPM of every operational
+         * contributing core. This deliberately prevents one 256-RPM core from
+         * granting high-RPM cloak bonuses to a bank of slow 32-RPM auxiliaries.
+         */
         float effectiveRpm;
-        if (totalOperationalCapacity > 0) {
+        if (operationalContributingCoreCount > 0) {
             effectiveRpm = (float) (
-                    operationalRpmWeightedSum / totalOperationalCapacity
+                    operationalRpmSum / operationalContributingCoreCount
             );
-        } else if (totalPotentialCapacity > 0) {
+        } else if (potentialContributingCoreCount > 0) {
+            // Keep useful diagnostics while the network is stalled/overstressed.
             effectiveRpm = (float) (
-                    potentialRpmWeightedSum / totalPotentialCapacity
+                    potentialRpmSum / potentialContributingCoreCount
             );
         } else {
             effectiveRpm = 0.0F;
         }
 
+        CloakingServerSettings serverSettings = CloakingServerSettings.fromConfig();
+
         float transitionDuration = calculateTransitionDurationSeconds(
-                CloakingServerSettings.fromConfig().transitionDurationSeconds(),
+                serverSettings.transitionDurationSeconds(),
+                effectiveRpm
+        );
+
+        double fullyCloakedDistance = calculateFullyCloakedDistance(
+                serverSettings.fullyVisibleDistance(),
+                serverSettings.fullyCloakedDistance(),
+                blockCount,
                 effectiveRpm
         );
 
@@ -240,7 +294,9 @@ public final class CloakingManager {
         system.totalPotentialCapacity = totalPotentialCapacity;
         system.totalOperationalCapacity = totalOperationalCapacity;
         system.effectiveRpm = effectiveRpm;
+        system.efficiencyMultiplier = efficiencyMultiplier;
         system.transitionDurationSeconds = transitionDuration;
+        system.fullyCloakedDistance = fullyCloakedDistance;
         system.capacitySatisfied = capacitySatisfied;
 
         for (CloakingCoreBlockEntity core : system.cores.values()) {
@@ -251,7 +307,9 @@ public final class CloakingManager {
                     totalOperationalCapacity,
                     capacitySatisfied,
                     effectiveRpm,
-                    transitionDuration
+                    efficiencyMultiplier,
+                    transitionDuration,
+                    fullyCloakedDistance
             );
         }
 
@@ -261,17 +319,83 @@ public final class CloakingManager {
 
         boolean publishedChanged =
                 !effectiveSettings.equals(system.publishedSettings)
+                        || blockCount != system.publishedBlockCount
                         || Math.abs(
                                 transitionDuration
                                         - system.publishedTransitionDurationSeconds
-                        ) > 0.05F;
+                        ) > 0.05F
+                        || Math.abs(
+                                fullyCloakedDistance
+                                        - system.publishedFullyCloakedDistance
+                        ) > 0.05;
 
         system.publishedSettings = effectiveSettings;
+        system.publishedBlockCount = blockCount;
         system.publishedTransitionDurationSeconds = transitionDuration;
+        system.publishedFullyCloakedDistance = fullyCloakedDistance;
 
         if (publishedChanged) {
             sync();
         }
+    }
+
+    public static float calculateEfficiencyMultiplier(int contributingCoreCount) {
+        if (contributingCoreCount <= 1) {
+            return 1.0F;
+        }
+
+        return Math.max(
+                0.75F,
+                1.0F - 0.05F * (contributingCoreCount - 1)
+        );
+    }
+
+    /**
+     * Calculates the distance where a fully cloaked ship begins to reveal.
+     *
+     * The configured fully-visible distance remains fixed. The configured gap
+     * between fully-visible and fully-cloaked distances is the 256-block
+     * reference gap at <=128 system RPM. Larger ships expand that gap by sqrt
+     * of block count. Above 128 average RPM the gap is linearly compressed,
+     * reaching only 10% of its size-scaled value at 256 RPM.
+     */
+    public static double calculateFullyCloakedDistance(
+            double configuredFullyVisibleDistance,
+            double configuredFullyCloakedDistance,
+            int blockCount,
+            float effectiveRpm
+    ) {
+        double visible = Math.max(0.0, configuredFullyVisibleDistance);
+        double configuredGap = Math.max(
+                0.0,
+                configuredFullyCloakedDistance - visible
+        );
+
+        if (configuredGap <= 0.0 || blockCount <= 0) {
+            return visible;
+        }
+
+        double sizeMultiplier = Math.sqrt(
+                Math.max(1.0, blockCount) / REVEAL_REFERENCE_BLOCKS
+        );
+
+        float highRpmProgress = 0.0F;
+        if (effectiveRpm > REVEAL_BONUS_START_RPM) {
+            highRpmProgress = (effectiveRpm - REVEAL_BONUS_START_RPM)
+                    / (REVEAL_BONUS_MAX_RPM - REVEAL_BONUS_START_RPM);
+            highRpmProgress = Math.max(
+                    0.0F,
+                    Math.min(1.0F, highRpmProgress)
+            );
+        }
+
+        double rpmGapMultiplier = 1.0
+                - (1.0 - MIN_REVEAL_GAP_MULTIPLIER) * highRpmProgress;
+
+        return visible
+                + configuredGap
+                * sizeMultiplier
+                * rpmGapMultiplier;
     }
 
     public static float calculateTransitionDurationSeconds(
@@ -331,10 +455,8 @@ public final class CloakingManager {
                 .map(system -> new CloakingSyncPayload.Entry(
                         system.subLevelId,
                         system.publishedSettings,
-                        calculateTransitionDurationSeconds(
-                                serverSettings.transitionDurationSeconds(),
-                                system.effectiveRpm
-                        )
+                        system.publishedTransitionDurationSeconds,
+                        system.publishedFullyCloakedDistance
                 ))
                 .toList();
 
@@ -405,8 +527,12 @@ public final class CloakingManager {
         private int totalOperationalCapacity;
         private boolean capacitySatisfied;
         private float effectiveRpm;
+        private float efficiencyMultiplier = 1.0F;
         private float transitionDurationSeconds;
+        private double fullyCloakedDistance;
+        private int publishedBlockCount = -1;
         private float publishedTransitionDurationSeconds = -1.0F;
+        private double publishedFullyCloakedDistance = -1.0;
 
         private CloakSystem(UUID subLevelId) {
             this.subLevelId = subLevelId;

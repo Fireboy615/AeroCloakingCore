@@ -37,6 +37,10 @@ public final class CloakingClient {
     private static final Map<UUID, Float> TRANSITION_DURATIONS =
             new ConcurrentHashMap<>();
 
+    /** Runtime ship-size/RPM-adjusted distance where proximity reveal starts. */
+    private static final Map<UUID, Double> FULLY_CLOAKED_DISTANCES =
+            new ConcurrentHashMap<>();
+
     /** Sublevels present in the most recent server sync. */
     private static final Set<UUID> SERVER_SUBLEVELS =
             ConcurrentHashMap.newKeySet();
@@ -74,6 +78,7 @@ public final class CloakingClient {
         Set<UUID> known = new HashSet<>(TRANSITIONS.keySet());
         known.addAll(CORE_SETTINGS.keySet());
         known.addAll(TRANSITION_DURATIONS.keySet());
+        known.addAll(FULLY_CLOAKED_DISTANCES.keySet());
 
         for (CloakingSyncPayload.Entry entry : entries) {
             UUID id = entry.subLevelId();
@@ -84,6 +89,10 @@ public final class CloakingClient {
             TRANSITION_DURATIONS.put(
                     id,
                     Math.max(0.0F, entry.transitionDurationSeconds())
+            );
+            FULLY_CLOAKED_DISTANCES.put(
+                    id,
+                    Math.max(0.0, entry.fullyCloakedDistance())
             );
 
             setTargetStrength(
@@ -109,7 +118,8 @@ public final class CloakingClient {
                         .map(id -> new CloakingSyncPayload.Entry(
                                 id,
                                 CloakingCoreSettings.DEFAULT.withCloakStrength(1.0F),
-                                SERVER_SETTINGS.transitionDurationSeconds()
+                                SERVER_SETTINGS.transitionDurationSeconds(),
+                                SERVER_SETTINGS.fullyCloakedDistance()
                         ))
                         .toList(),
                 SERVER_SETTINGS
@@ -172,6 +182,7 @@ public final class CloakingClient {
             if (!SERVER_SUBLEVELS.contains(subLevelId)) {
                 CORE_SETTINGS.remove(subLevelId);
                 TRANSITION_DURATIONS.remove(subLevelId);
+                FULLY_CLOAKED_DISTANCES.remove(subLevelId);
             }
 
             return 0.0F;
@@ -439,7 +450,10 @@ public final class CloakingClient {
     }
 
     private static double fullyCloakedDistance(UUID subLevelId) {
-        return SERVER_SETTINGS.fullyCloakedDistance();
+        return FULLY_CLOAKED_DISTANCES.getOrDefault(
+                subLevelId,
+                SERVER_SETTINGS.fullyCloakedDistance()
+        );
     }
 
     private static double axisDistance(

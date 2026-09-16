@@ -258,8 +258,6 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         int left = 20;
         int right = imageWidth - 20;
 
-        // Small divider so the live Create-system readout is visually separate
-        // from the editable cloak controls above it.
         guiGraphics.fill(left, 84, right, 85, 0xFF505050);
 
         guiGraphics.drawString(
@@ -275,9 +273,10 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 font,
                 Component.literal(String.format(
                         Locale.ROOT,
-                        "Ship: %,d blocks   Cores: %d",
+                        "Ship: %,d blocks   Cores: %d   Transition: %.2fs",
                         menu.getSystemBlocks(),
-                        menu.getSystemCoreCount()
+                        menu.getSystemCoreCount(),
+                        menu.getTransitionSeconds()
                 )),
                 left,
                 100,
@@ -285,12 +284,24 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 false
         );
 
+        float currentRpm = menu.getRpm();
+        float theoreticalRpm = menu.getTheoreticalRpm();
+
+        String rpmText = Math.abs(currentRpm - theoreticalRpm) > 0.05F
+                ? String.format(
+                        Locale.ROOT,
+                        "%.1f RPM (input %.1f)",
+                        currentRpm,
+                        theoreticalRpm
+                )
+                : String.format(Locale.ROOT, "%.1f RPM", currentRpm);
+
         guiGraphics.drawString(
                 font,
                 Component.literal(String.format(
                         Locale.ROOT,
-                        "This core: %.1f RPM   Cap: %,d   Load: %,d",
-                        menu.getRpm(),
+                        "Core: %s   Cap: %,d   Load: %,d",
+                        rpmText,
                         menu.getCorePotentialCapacity(),
                         menu.getAssignedBlocks()
                 )),
@@ -304,10 +315,10 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 font,
                 Component.literal(String.format(
                         Locale.ROOT,
-                        "System cap: %,d / %,d   Core stress: %,d SU",
+                        "System: %.1f avg RPM   Capacity: %,d / %,d",
+                        menu.getSystemRpm(),
                         menu.getSystemOperationalCapacity(),
-                        menu.getSystemBlocks(),
-                        menu.getCurrentSu()
+                        menu.getSystemBlocks()
                 )),
                 left,
                 122,
@@ -319,8 +330,10 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 font,
                 Component.literal(String.format(
                         Locale.ROOT,
-                        "Cloak transition: %.2fs",
-                        menu.getTransitionSeconds()
+                        "Stress: %,d SU   Efficiency: %.0f%%   Reveal starts: %.1f",
+                        menu.getCurrentSu(),
+                        menu.getSystemEfficiencyMultiplier() * 100.0F,
+                        menu.getRevealStartDistance()
                 )),
                 left,
                 133,
@@ -331,10 +344,11 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
 
     private static String statusText(int status) {
         return switch (status) {
-            case 1 -> "Core below minimum RPM";
+            case 1 -> "Core below 32 RPM";
             case 2 -> "Core network overstressed";
             case 3 -> "Insufficient ship capacity";
             case 4 -> "Ready";
+            case 5 -> "Kinetic input stalled";
             default -> "No Sable sublevel";
         };
     }
@@ -343,7 +357,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         return switch (status) {
             case 4 -> 0xD0D0D0;
             case 3 -> 0xFFCC66;
-            case 1, 2 -> 0xFF8888;
+            case 1, 2, 5 -> 0xFF8888;
             default -> 0xA0A0A0;
         };
     }

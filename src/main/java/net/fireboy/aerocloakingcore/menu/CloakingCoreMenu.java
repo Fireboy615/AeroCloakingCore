@@ -33,7 +33,11 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
     public static final int DATA_CURRENT_SU = 8;
     public static final int DATA_TRANSITION_CENTISECONDS = 9;
     public static final int DATA_STATUS = 10;
-    public static final int DATA_COUNT = 11;
+    public static final int DATA_THEORETICAL_RPM_X10 = 11;
+    public static final int DATA_SYSTEM_RPM_X10 = 12;
+    public static final int DATA_EFFICIENCY_PERMILLE = 13;
+    public static final int DATA_REVEAL_DISTANCE_CENTI = 14;
+    public static final int DATA_COUNT = 15;
 
     @Nullable
     private final CloakingCoreBlockEntity core;
@@ -96,7 +100,7 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
             public int get(int index) {
                 return switch (index) {
                     case DATA_RPM_X10 -> clampDataValue(
-                            Math.round(core.getTheoreticalRpm() * 10.0F)
+                            Math.round(core.getCurrentRpm() * 10.0F)
                     );
                     case DATA_CORE_POTENTIAL_CAPACITY -> clampDataValue(
                             core.getPotentialCloakCapacityBlocks()
@@ -130,6 +134,18 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
                     );
                     case DATA_STATUS -> clampDataValue(
                             core.getSystemStatusCode()
+                    );
+                    case DATA_THEORETICAL_RPM_X10 -> clampDataValue(
+                            Math.round(core.getTheoreticalRpm() * 10.0F)
+                    );
+                    case DATA_SYSTEM_RPM_X10 -> clampDataValue(
+                            Math.round(core.getSystemEffectiveRpm() * 10.0F)
+                    );
+                    case DATA_EFFICIENCY_PERMILLE -> clampDataValue(
+                            Math.round(core.getSystemEfficiencyMultiplier() * 1000.0F)
+                    );
+                    case DATA_REVEAL_DISTANCE_CENTI -> clampDataValue(
+                            (int) Math.round(core.getSystemFullyCloakedDistance() * 100.0)
                     );
                     default -> 0;
                 };
@@ -206,6 +222,22 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
 
     public float getRpm() {
         return systemData.get(DATA_RPM_X10) / 10.0F;
+    }
+
+    public float getTheoreticalRpm() {
+        return systemData.get(DATA_THEORETICAL_RPM_X10) / 10.0F;
+    }
+
+    public float getSystemRpm() {
+        return systemData.get(DATA_SYSTEM_RPM_X10) / 10.0F;
+    }
+
+    public float getSystemEfficiencyMultiplier() {
+        return systemData.get(DATA_EFFICIENCY_PERMILLE) / 1000.0F;
+    }
+
+    public double getRevealStartDistance() {
+        return systemData.get(DATA_REVEAL_DISTANCE_CENTI) / 100.0;
     }
 
     public int getCorePotentialCapacity() {
