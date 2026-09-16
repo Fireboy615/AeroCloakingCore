@@ -187,22 +187,22 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
         addSlot(new FrequencySlot(
                 frequencies,
                 FREQUENCY_FIRST_SLOT,
-                244,
-                188,
+                14,
+                112,
                 true
         ));
 
         addSlot(new FrequencySlot(
                 frequencies,
                 FREQUENCY_SECOND_SLOT,
-                272,
-                188,
+                36,
+                112,
                 false
         ));
 
         // Player inventory.
-        int inventoryX = 79;
-        int inventoryY = 248;
+        int inventoryX = 7;
+        int inventoryY = 149;
 
         for (int row = 0; row < 3; row++) {
             for (int column = 0; column < 9; column++) {
@@ -221,7 +221,7 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
                     inventory,
                     column,
                     inventoryX + column * 18,
-                    306
+                    205
             ));
         }
     }

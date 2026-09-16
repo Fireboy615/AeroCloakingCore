@@ -7,12 +7,11 @@ import net.fireboy.aerocloakingcore.menu.CloakingCoreMenu;
 import net.fireboy.aerocloakingcore.network.UpdateCloakingCoreLinkFrequencyPayload;
 import net.fireboy.aerocloakingcore.network.UpdateCloakingCoreSettingsPayload;
 
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractSliderButton;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
-import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Inventory;
@@ -26,23 +25,36 @@ import java.util.function.DoubleConsumer;
 import java.util.function.DoubleFunction;
 
 /**
- * Cloaking Core control screen.
+ * Compact Create-inspired control screen for the Cloaking Core.
  *
- * The layout deliberately separates controls, this core's state, ship-wide
- * state and Redstone Link configuration. The goal is to keep the important
- * numbers readable without turning the screen into a wall of debug text.
+ * Settings are applied as soon as the player changes them. There is no
+ * separate Done/Save action: Escape/E can simply close the screen at any time.
  */
 public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu> {
 
-    private static final int PANEL_LEFT = 20;
-    private static final int PANEL_RIGHT = 300;
+    private static final int GUI_WIDTH = 176;
+    private static final int GUI_HEIGHT = 222;
+
+    private static final int CONTROL_X = 8;
+    private static final int CONTROL_WIDTH = 160;
+
+    private static final int INVENTORY_X = 7;
+    private static final int INVENTORY_Y = 149;
+    private static final int HOTBAR_Y = 205;
+
+    private static final int FREQ_FIRST_X = 14;
+    private static final int FREQ_SECOND_X = 36;
+    private static final int FREQ_Y = 112;
+
+    /** Prevents an older server echo from snapping the slider backwards. */
+    private static final long LOCAL_EDIT_GRACE_NANOS = 300_000_000L;
 
     private float cloakStrength;
     private CloakRenderMode renderMode;
 
     private ValueSlider strengthSlider;
     private boolean draggingStrengthSlider;
-    private boolean strengthDirty;
+    private long ignoreServerStrengthUntilNanos;
 
     public CloakingCoreScreen(
             CloakingCoreMenu menu,
@@ -51,8 +63,8 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
     ) {
         super(menu, playerInventory, title);
 
-        imageWidth = 320;
-        imageHeight = 326;
+        imageWidth = GUI_WIDTH;
+        imageHeight = GUI_HEIGHT;
 
         CloakingCoreSettings settings = menu.getInitialSettings();
         cloakStrength = settings.cloakStrength();
@@ -63,22 +75,19 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
     protected void init() {
         super.init();
 
-        int x = leftPos + 20;
-        int width = imageWidth - 40;
-        int halfWidth = (width - 8) / 2;
-        int rightX = x + halfWidth + 8;
-
         strengthSlider = new ValueSlider(
-                x,
-                topPos + 28,
-                width,
-                20,
+                leftPos + CONTROL_X,
+                topPos + 24,
+                CONTROL_WIDTH,
+                16,
                 0.0,
                 1.0,
                 cloakStrength,
                 value -> {
                     cloakStrength = (float) value;
-                    strengthDirty = true;
+                    ignoreServerStrengthUntilNanos =
+                            System.nanoTime() + LOCAL_EDIT_GRACE_NANOS;
+                    sendSettings(true);
                 },
                 value -> Component.translatable(
                         "screen.aerocloakingcore.cloaking_core.strength",
@@ -92,33 +101,16 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                         .withValues(CloakRenderMode.values())
                         .withInitialValue(renderMode)
                         .create(
-                                x,
-                                topPos + 54,
-                                width,
-                                20,
-                                Component.translatable(
-                                        "screen.aerocloakingcore.cloaking_core.render_mode"
-                                ),
-                                (button, value) -> renderMode = value
+                                leftPos + CONTROL_X,
+                                topPos + 44,
+                                CONTROL_WIDTH,
+                                16,
+                                Component.literal("Render Mode"),
+                                (button, value) -> {
+                                    renderMode = value;
+                                    sendSettings(false);
+                                }
                         )
-        );
-
-        addRenderableWidget(
-                Button.builder(
-                                CommonComponents.GUI_DONE,
-                                button -> saveAndClose()
-                        )
-                        .bounds(x, topPos + 212, halfWidth, 20)
-                        .build()
-        );
-
-        addRenderableWidget(
-                Button.builder(
-                                CommonComponents.GUI_CANCEL,
-                                button -> onClose()
-                        )
-                        .bounds(rightX, topPos + 212, halfWidth, 20)
-                        .build()
         );
     }
 
@@ -126,22 +118,22 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
     protected void containerTick() {
         super.containerTick();
 
-        // The opening buffer is only a snapshot. Once normal menu data arrives,
-        // keep an untouched slider aligned with the server-authoritative value.
-        if (!strengthDirty
-                && !draggingStrengthSlider
-                && strengthSlider != null
-                && menu.hasServerStats()) {
-            float serverStrength = Mth.clamp(
-                    menu.getServerCloakStrength(),
-                    0.0F,
-                    1.0F
-            );
+        if (draggingStrengthSlider
+                || strengthSlider == null
+                || !menu.hasServerStats()
+                || System.nanoTime() < ignoreServerStrengthUntilNanos) {
+            return;
+        }
 
-            if (Math.abs(serverStrength - cloakStrength) > 0.0001F) {
-                cloakStrength = serverStrength;
-                strengthSlider.setActualValueSilently(serverStrength);
-            }
+        float serverStrength = Mth.clamp(
+                menu.getServerCloakStrength(),
+                0.0F,
+                1.0F
+        );
+
+        if (Math.abs(serverStrength - cloakStrength) > 0.0001F) {
+            cloakStrength = serverStrength;
+            strengthSlider.setActualValueSilently(serverStrength);
         }
     }
 
@@ -222,22 +214,22 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
             }
 
             draggingStrengthSlider = false;
+            ignoreServerStrengthUntilNanos =
+                    System.nanoTime() + LOCAL_EDIT_GRACE_NANOS;
         }
 
         return super.mouseReleased(mouseX, mouseY, button);
     }
 
-    private void saveAndClose() {
+    private void sendSettings(boolean updateStrength) {
         PacketDistributor.sendToServer(
                 new UpdateCloakingCoreSettingsPayload(
                         menu.containerId,
-                        strengthDirty,
+                        updateStrength,
                         cloakStrength,
                         renderMode
                 )
         );
-
-        onClose();
     }
 
     @Override
@@ -250,8 +242,8 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 font,
                 title,
                 imageWidth / 2,
-                8,
-                0xFFFFFF
+                6,
+                0x343434
         );
 
         drawSystemOverview(guiGraphics);
@@ -260,9 +252,9 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         guiGraphics.drawString(
                 font,
                 Component.translatable("container.inventory"),
-                79,
-                238,
-                0xA0A0A0,
+                INVENTORY_X,
+                138,
+                0x404040,
                 false
         );
     }
@@ -270,216 +262,170 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
     private void drawSystemOverview(GuiGraphics guiGraphics) {
         int status = menu.getSystemStatus();
 
-        guiGraphics.fill(PANEL_LEFT, 82, PANEL_RIGHT, 83, 0xFF505050);
-
         guiGraphics.drawString(
                 font,
                 Component.literal("Cloaking System"),
-                PANEL_LEFT,
-                88,
-                0xE0E0E0,
+                10,
+                65,
+                0x4A3D2B,
                 false
         );
 
-        String statusLabel = statusText(status);
+        drawStatusIndicator(guiGraphics, status, 164, 68);
         drawRightAlignedString(
                 guiGraphics,
-                statusLabel,
-                PANEL_RIGHT,
-                88,
+                statusText(status),
+                158,
+                65,
                 statusColor(status)
         );
 
-        drawInfoPanel(guiGraphics, 20, 100, 155, 154, "THIS CORE");
-        drawInfoPanel(guiGraphics, 165, 100, 300, 154, "SHIP SYSTEM");
+        int leftX = 10;
+        int rightX = 90;
+        int rightEdge = 166;
 
-        float currentRpm = menu.getRpm();
-        float theoreticalRpm = menu.getTheoreticalRpm();
-
-        String rpmText = Math.abs(currentRpm - theoreticalRpm) > 0.05F
-                ? String.format(
-                        Locale.ROOT,
-                        "%.1f / %.1f",
-                        currentRpm,
-                        theoreticalRpm
-                )
-                : String.format(Locale.ROOT, "%.1f", currentRpm);
-
-        drawKeyValue(guiGraphics, 27, 116, 148, "RPM", rpmText);
-        drawKeyValue(
-                guiGraphics,
-                27,
-                128,
-                148,
-                "Capacity",
-                String.format(Locale.ROOT, "%,d", menu.getCorePotentialCapacity())
+        guiGraphics.drawString(
+                font,
+                Component.literal("CORE"),
+                leftX,
+                76,
+                0x765F37,
+                false
         );
-        drawKeyValue(
-                guiGraphics,
-                27,
-                140,
-                148,
-                "Assigned",
-                String.format(Locale.ROOT, "%,d", menu.getAssignedBlocks())
+        guiGraphics.drawString(
+                font,
+                Component.literal("SHIP"),
+                rightX,
+                76,
+                0x765F37,
+                false
         );
-        drawKeyValue(
-                guiGraphics,
-                27,
-                152,
-                148,
-                "Core SU",
-                formatSu(getDisplayedSu())
-        );
-
-        drawKeyValue(
-                guiGraphics,
-                172,
-                116,
-                293,
-                "Cores",
-                Integer.toString(menu.getSystemCoreCount())
-        );
-        drawKeyValue(
-                guiGraphics,
-                172,
-                128,
-                293,
-                "Average RPM",
-                String.format(Locale.ROOT, "%.1f", menu.getSystemRpm())
-        );
-        drawKeyValue(
-                guiGraphics,
-                172,
-                140,
-                293,
-                "Capacity",
-                String.format(
-                        Locale.ROOT,
-                        "%,d",
-                        menu.getSystemOperationalCapacity()
-                )
-        );
-        drawKeyValue(
-                guiGraphics,
-                172,
-                152,
-                293,
-                "Efficiency",
-                String.format(
-                        Locale.ROOT,
-                        "%.0f%%",
-                        menu.getSystemEfficiencyFactor() * 100.0F
-                )
-        );
-
-        int blocks = menu.getSystemBlocks();
-        int capacity = menu.getSystemOperationalCapacity();
 
         guiGraphics.drawString(
                 font,
                 Component.literal(String.format(
                         Locale.ROOT,
-                        "Ship capacity: %,d / %,d blocks",
-                        blocks,
-                        capacity
+                        "%.0f RPM",
+                        menu.getRpm()
                 )),
-                PANEL_LEFT,
-                161,
-                capacity > 0 && blocks > capacity ? 0xFF8888 : 0xC8C8C8,
+                leftX,
+                86,
+                0x343434,
                 false
+        );
+
+        String shipLine = String.format(
+                Locale.ROOT,
+                "%d core%s  %.0f avg",
+                menu.getSystemCoreCount(),
+                menu.getSystemCoreCount() == 1 ? "" : "s",
+                menu.getSystemRpm()
+        );
+        drawScaledRightAlignedString(
+                guiGraphics,
+                shipLine,
+                rightEdge,
+                86,
+                0.78F,
+                0x343434
+        );
+
+        String coreCapacity = String.format(
+                Locale.ROOT,
+                "%d / %d",
+                menu.getAssignedBlocks(),
+                menu.getCorePotentialCapacity()
+        );
+        String shipCapacity = String.format(
+                Locale.ROOT,
+                "%d / %d",
+                menu.getSystemBlocks(),
+                menu.getSystemOperationalCapacity()
+        );
+
+        guiGraphics.drawString(
+                font,
+                Component.literal(coreCapacity),
+                leftX,
+                95,
+                0x565656,
+                false
+        );
+        drawRightAlignedString(
+                guiGraphics,
+                shipCapacity,
+                rightEdge,
+                95,
+                0x565656
         );
 
         drawCapacityBar(
                 guiGraphics,
-                PANEL_LEFT,
-                173,
-                PANEL_RIGHT - PANEL_LEFT,
-                blocks,
-                capacity
+                leftX,
+                105,
+                70,
+                menu.getAssignedBlocks(),
+                menu.getCorePotentialCapacity()
+        );
+        drawCapacityBar(
+                guiGraphics,
+                rightX,
+                105,
+                rightEdge - rightX,
+                menu.getSystemBlocks(),
+                menu.getSystemOperationalCapacity()
         );
 
-        guiGraphics.drawString(
-                font,
-                Component.literal(String.format(
-                        Locale.ROOT,
-                        "Transition %.2fs    Reveal starts %.1f blocks",
-                        menu.getTransitionSeconds(),
-                        menu.getRevealStartDistance()
-                )),
-                PANEL_LEFT,
-                181,
-                0xA8A8A8,
-                false
+        String metrics = String.format(
+                Locale.ROOT,
+                "%s SU   %d%% eff   R %.1f   T %.1fs",
+                formatSu(getDisplayedSu()),
+                Math.round(menu.getSystemEfficiencyFactor() * 100.0F),
+                menu.getRevealStartDistance(),
+                menu.getTransitionSeconds()
         );
+        drawScaledString(guiGraphics, metrics, 10, 110, 0.69F, 0x5E5140);
     }
 
     private void drawRedstoneLink(GuiGraphics guiGraphics) {
         guiGraphics.drawString(
                 font,
                 Component.literal("Redstone Link"),
-                PANEL_LEFT,
-                191,
-                0xD0D0D0,
+                60,
+                116,
+                0x40372D,
                 false
         );
-
-        guiGraphics.drawString(
-                font,
-                Component.literal("Signal 0-15 controls cloak strength"),
-                PANEL_LEFT,
-                202,
-                0x888888,
-                false
-        );
-    }
-
-    private void drawInfoPanel(
-            GuiGraphics guiGraphics,
-            int left,
-            int top,
-            int right,
-            int bottom,
-            String heading
-    ) {
-        guiGraphics.fill(left, top, right, bottom, 0x701A1A1A);
-        guiGraphics.fill(left, top, right, top + 1, 0xFF454545);
-        guiGraphics.fill(left, bottom - 1, right, bottom, 0xFF303030);
-        guiGraphics.fill(left, top, left + 1, bottom, 0xFF454545);
-        guiGraphics.fill(right - 1, top, right, bottom, 0xFF303030);
-
-        guiGraphics.drawString(
-                font,
-                Component.literal(heading),
-                left + 7,
-                top + 5,
-                0x909090,
-                false
-        );
-    }
-
-    private void drawKeyValue(
-            GuiGraphics guiGraphics,
-            int left,
-            int y,
-            int right,
-            String key,
-            String value
-    ) {
-        guiGraphics.drawString(
-                font,
-                Component.literal(key),
-                left,
-                y,
-                0xA0A0A0,
-                false
-        );
-
-        drawRightAlignedString(
+        drawScaledString(
                 guiGraphics,
-                value,
-                right,
-                y,
-                0xE0E0E0
+                "0-15 -> cloak strength",
+                60,
+                125,
+                0.68F,
+                0x6C5A47
+        );
+    }
+
+    private void drawStatusIndicator(
+            GuiGraphics guiGraphics,
+            int status,
+            int centerX,
+            int centerY
+    ) {
+        int color = statusColor(status);
+        guiGraphics.fill(
+                centerX - 2,
+                centerY - 2,
+                centerX + 3,
+                centerY + 3,
+                0xFF4B4338
+        );
+        guiGraphics.fill(
+                centerX - 1,
+                centerY - 1,
+                centerX + 2,
+                centerY + 2,
+                0xFF000000 | color
         );
     }
 
@@ -491,22 +437,62 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
             int used,
             int capacity
     ) {
-        guiGraphics.fill(x, y, x + width, y + 5, 0xFF292929);
+        guiGraphics.fill(x, y, x + width, y + 4, 0xFF5F5447);
+        guiGraphics.fill(x + 1, y + 1, x + width - 1, y + 3, 0xFFBBA989);
 
         float ratio = capacity <= 0
                 ? 0.0F
                 : Mth.clamp(used / (float) capacity, 0.0F, 1.0F);
 
-        int filled = Math.round(width * ratio);
+        int filled = Math.round((width - 2) * ratio);
         int barColor = used > capacity
-                ? 0xFFB85C5C
+                ? 0xFFC15C54
                 : ratio > 0.85F
-                        ? 0xFFC6A45C
-                        : 0xFF6E9A72;
+                        ? 0xFFD0A44E
+                        : 0xFF709B6E;
 
         if (filled > 0) {
-            guiGraphics.fill(x, y, x + filled, y + 5, barColor);
+            guiGraphics.fill(x + 1, y + 1, x + 1 + filled, y + 3, barColor);
         }
+    }
+
+    private void drawScaledString(
+            GuiGraphics guiGraphics,
+            String text,
+            int x,
+            int y,
+            float scale,
+            int color
+    ) {
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().translate(x, y, 0.0F);
+        guiGraphics.pose().scale(scale, scale, 1.0F);
+        guiGraphics.drawString(font, Component.literal(text), 0, 0, color, false);
+        guiGraphics.pose().popPose();
+    }
+
+    private void drawScaledRightAlignedString(
+            GuiGraphics guiGraphics,
+            String text,
+            int right,
+            int y,
+            float scale,
+            int color
+    ) {
+        int width = font.width(text);
+
+        guiGraphics.pose().pushPose();
+        guiGraphics.pose().translate(right, y, 0.0F);
+        guiGraphics.pose().scale(scale, scale, 1.0F);
+        guiGraphics.drawString(
+                font,
+                Component.literal(text),
+                -width,
+                0,
+                color,
+                false
+        );
+        guiGraphics.pose().popPose();
     }
 
     private void drawRightAlignedString(
@@ -531,16 +517,17 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
             return String.format(Locale.ROOT, "%,d", Math.round(su));
         }
 
-        return String.format(Locale.ROOT, "%,.2f", su);
+        return String.format(Locale.ROOT, "%,.1f", su);
     }
 
     /**
-     * Predict the SU number locally from the slider's current value so the menu
-     * reacts immediately while dragging. The server remains authoritative and
-     * receives the chosen strength when Done is pressed.
+     * While the player drags the slider, predict SU locally. As soon as the
+     * server echo arrives the authoritative Create stress value takes over.
      */
     private float getDisplayedSu() {
-        if (!strengthDirty && menu.hasServerStats()) {
+        if (!draggingStrengthSlider
+                && System.nanoTime() >= ignoreServerStrengthUntilNanos
+                && menu.hasServerStats()) {
             return menu.getAuthoritativeDisplayedSu();
         }
 
@@ -561,21 +548,21 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
 
     private static String statusText(int status) {
         return switch (status) {
-            case 1 -> "Below 32 RPM";
+            case 1 -> "Low RPM";
             case 2 -> "Overstressed";
-            case 3 -> "Insufficient Capacity";
+            case 3 -> "No Capacity";
             case 4 -> "Ready";
-            case 5 -> "Input Stalled";
-            default -> "No Sublevel";
+            case 5 -> "Stalled";
+            default -> "No Ship";
         };
     }
 
     private static int statusColor(int status) {
         return switch (status) {
-            case 4 -> 0x88CC88;
-            case 3 -> 0xFFCC66;
-            case 1, 2, 5 -> 0xFF8888;
-            default -> 0xA0A0A0;
+            case 4 -> 0x4A8A50;
+            case 3 -> 0xA97922;
+            case 1, 2, 5 -> 0xA94E4E;
+            default -> 0x6F6F6F;
         };
     }
 
@@ -586,65 +573,127 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
             int mouseX,
             int mouseY
     ) {
-        guiGraphics.fill(
-                leftPos - 1,
-                topPos - 1,
-                leftPos + imageWidth + 1,
-                topPos + imageHeight + 1,
-                0xFF404040
+        drawCreateControlPanel(guiGraphics);
+        drawInventoryPanel(guiGraphics);
+
+        drawFrequencySlot(
+                guiGraphics,
+                FREQ_FIRST_X,
+                FREQ_Y,
+                0xFFB64A4A,
+                0xFF7E3939,
+                0xFFB7877F
         );
-
-        guiGraphics.fill(
-                leftPos,
-                topPos,
-                leftPos + imageWidth,
-                topPos + imageHeight,
-                0xE0101010
+        drawFrequencySlot(
+                guiGraphics,
+                FREQ_SECOND_X,
+                FREQ_Y,
+                0xFF4E70B8,
+                0xFF3B5687,
+                0xFF8799B9
         );
-
-        drawSlotFrame(guiGraphics, 244, 188);
-        drawSlotFrame(guiGraphics, 272, 188);
-
-        int inventoryX = 79;
-        int inventoryY = 248;
 
         for (int row = 0; row < 3; row++) {
             for (int column = 0; column < 9; column++) {
-                drawSlotFrame(
+                drawInventorySlot(
                         guiGraphics,
-                        inventoryX + column * 18,
-                        inventoryY + row * 18
+                        INVENTORY_X + column * 18,
+                        INVENTORY_Y + row * 18
                 );
             }
         }
 
         for (int column = 0; column < 9; column++) {
-            drawSlotFrame(
+            drawInventorySlot(
                     guiGraphics,
-                    inventoryX + column * 18,
-                    306
+                    INVENTORY_X + column * 18,
+                    HOTBAR_Y
             );
         }
     }
 
-    private void drawSlotFrame(GuiGraphics guiGraphics, int x, int y) {
+    private void drawCreateControlPanel(GuiGraphics guiGraphics) {
+        int left = leftPos;
+        int top = topPos;
+        int right = leftPos + imageWidth;
+
+        // Dark Create-style outline and grey title rail.
+        guiGraphics.fill(left - 2, top - 2, right + 2, top + 132, 0xFF282828);
+        guiGraphics.fill(left, top, right, top + 20, 0xFFAEB1AE);
+        guiGraphics.fill(left + 2, top + 2, right - 2, top + 18, 0xFFBFC1BE);
+        guiGraphics.fill(left, top + 18, right, top + 21, 0xFF555753);
+
+        // Warm Create brass/canvas body.
+        guiGraphics.fill(left, top + 21, right, top + 130, 0xFFCBB595);
+        drawCreatePattern(guiGraphics, left + 2, top + 22, right - 2, top + 129);
+
+        // Lower rail of the control module.
+        guiGraphics.fill(left, top + 130, right, top + 132, 0xFF78756F);
+    }
+
+    private void drawCreatePattern(
+            GuiGraphics guiGraphics,
+            int left,
+            int top,
+            int right,
+            int bottom
+    ) {
+        for (int y = top; y < bottom; y += 6) {
+            int offset = ((y - top) / 6 & 1) == 0 ? 0 : 3;
+
+            for (int x = left + offset; x < right; x += 6) {
+                guiGraphics.fill(
+                        x,
+                        y,
+                        Math.min(x + 2, right),
+                        Math.min(y + 2, bottom),
+                        0x18FFFFFF
+                );
+            }
+        }
+    }
+
+    private void drawInventoryPanel(GuiGraphics guiGraphics) {
+        int left = leftPos;
+        int top = topPos + 134;
+        int right = leftPos + imageWidth;
+        int bottom = topPos + imageHeight;
+
+        guiGraphics.fill(left - 2, top - 2, right + 2, bottom + 2, 0xFF303030);
+        guiGraphics.fill(left, top, right, bottom, 0xFFC6C6C6);
+        guiGraphics.fill(left + 1, top + 1, right - 1, top + 2, 0xFFF0F0F0);
+        guiGraphics.fill(left + 1, top + 1, left + 2, bottom - 1, 0xFFF0F0F0);
+        guiGraphics.fill(right - 2, top + 2, right - 1, bottom - 1, 0xFF767676);
+        guiGraphics.fill(left + 2, bottom - 2, right - 1, bottom - 1, 0xFF767676);
+    }
+
+    private void drawInventorySlot(GuiGraphics guiGraphics, int x, int y) {
         int screenX = leftPos + x;
         int screenY = topPos + y;
 
-        guiGraphics.fill(
-                screenX - 1,
-                screenY - 1,
-                screenX + 17,
-                screenY + 17,
-                0xFF5A5A5A
-        );
-        guiGraphics.fill(
-                screenX,
-                screenY,
-                screenX + 16,
-                screenY + 16,
-                0xFF151515
-        );
+        guiGraphics.fill(screenX - 1, screenY - 1, screenX + 17, screenY + 17, 0xFF6B6B6B);
+        guiGraphics.fill(screenX, screenY, screenX + 16, screenY + 16, 0xFF939393);
+        guiGraphics.fill(screenX, screenY, screenX + 16, screenY + 1, 0xFF505050);
+        guiGraphics.fill(screenX, screenY, screenX + 1, screenY + 16, 0xFF505050);
+        guiGraphics.fill(screenX, screenY + 15, screenX + 16, screenY + 16, 0xFFE8E8E8);
+        guiGraphics.fill(screenX + 15, screenY, screenX + 16, screenY + 16, 0xFFE8E8E8);
+    }
+
+    private void drawFrequencySlot(
+            GuiGraphics guiGraphics,
+            int x,
+            int y,
+            int border,
+            int background,
+            int emptyTint
+    ) {
+        int screenX = leftPos + x;
+        int screenY = topPos + y;
+
+        guiGraphics.fill(screenX - 2, screenY - 2, screenX + 18, screenY + 18, border);
+        guiGraphics.fill(screenX - 1, screenY - 1, screenX + 17, screenY + 17, background);
+        guiGraphics.fill(screenX, screenY, screenX + 16, screenY + 16, emptyTint);
+        guiGraphics.fill(screenX + 2, screenY + 2, screenX + 14, screenY + 14, 0xFF8F8F8F);
     }
 
     private static Component renderModeName(CloakRenderMode mode) {
@@ -655,6 +704,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         };
     }
 
+    /** Create-themed light slider instead of the very dark vanilla slider. */
     private static final class ValueSlider extends AbstractSliderButton {
 
         private final double min;
@@ -703,17 +753,53 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
             setter.accept(actualValue());
         }
 
+        @Override
+        public void renderWidget(
+                GuiGraphics guiGraphics,
+                int mouseX,
+                int mouseY,
+                float partialTick
+        ) {
+            int x = getX();
+            int y = getY();
+            int width = getWidth();
+            int height = getHeight();
+
+            guiGraphics.fill(x, y, x + width, y + height, 0xFF4A4A47);
+            guiGraphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFFB8B8B2);
+            guiGraphics.fill(x + 2, y + 2, x + width - 2, y + height - 2, 0xFFD0CEC5);
+
+            int trackLeft = x + 5;
+            int trackRight = x + width - 5;
+            int trackY = y + height - 5;
+
+            guiGraphics.fill(trackLeft, trackY, trackRight, trackY + 2, 0xFF695D4E);
+
+            int knobX = trackLeft + (int) Math.round((trackRight - trackLeft) * value);
+            guiGraphics.fill(knobX - 2, y + 2, knobX + 3, y + height - 2, 0xFF6A5A43);
+            guiGraphics.fill(knobX - 1, y + 3, knobX + 2, y + height - 3, 0xFFB89B62);
+
+            Minecraft minecraft = Minecraft.getInstance();
+            guiGraphics.drawCenteredString(
+                    minecraft.font,
+                    getMessage(),
+                    x + width / 2,
+                    y + 4,
+                    active ? 0x303030 : 0x777777
+            );
+        }
+
         private void setValueFromScreenMouse(double mouseX) {
             double oldValue = value;
 
             value = Mth.clamp(
-                    (mouseX - (getX() + 4.0))
-                            / (getWidth() - 8.0),
+                    (mouseX - (getX() + 5.0))
+                            / (getWidth() - 10.0),
                     0.0,
                     1.0
             );
 
-            if (oldValue != value) {
+            if (Math.abs(oldValue - value) > 0.000001) {
                 applyValue();
             }
 
