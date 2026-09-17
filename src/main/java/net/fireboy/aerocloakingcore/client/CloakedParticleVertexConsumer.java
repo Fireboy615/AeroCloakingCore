@@ -3,20 +3,6 @@ package net.fireboy.aerocloakingcore.client;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 
 /**
-<<<<<<< HEAD
- * Carries a per-particle cloak strength through Minecraft's normal particle
- * batch without changing the batch order.
- *
- * Vanilla light-map UVs are sampled as UV2 / 16, so the low four bits of each
- * component are ignored by lighting. Together those two nibbles give us eight
- * bits in which to store the cloak strength. The particle shader injection
- * recovers the value and multiplies the final fragment alpha after vanilla's
- * own alpha-discard test has already run.
- *
- * That last detail is important: particles can fade smoothly all the way down
- * instead of being abruptly discarded when the multiplied alpha falls below
- * vanilla's 0.1 particle cutoff.
-=======
  * Adds per-particle cloak data to Minecraft's normal PARTICLE vertex format.
  *
  * Minecraft samples the light map with UV2 / 16, so the low four bits of both
@@ -30,27 +16,10 @@ import com.mojang.blaze3d.vertex.VertexConsumer;
  * ALPHA and ALPHA_SURFACE intentionally share the same particle representation
  * because a particle is already a single camera-facing surface. The terrain
  * surface-depth pre-pass has no meaningful equivalent for a sprite particle.
->>>>>>> 5cffd01 (Rendering in a happy state)
  */
 public final class CloakedParticleVertexConsumer implements VertexConsumer {
 
     private final VertexConsumer delegate;
-<<<<<<< HEAD
-    private final int encodedStrength;
-
-    public CloakedParticleVertexConsumer(
-            VertexConsumer delegate,
-            float cloakStrength
-    ) {
-        this.delegate = delegate;
-        this.encodedStrength = Math.max(
-                0,
-                Math.min(
-                        255,
-                        Math.round(cloakStrength * 255.0F)
-                )
-        );
-=======
     private final int encodedCloak;
 
     public CloakedParticleVertexConsumer(
@@ -76,7 +45,6 @@ public final class CloakedParticleVertexConsumer implements VertexConsumer {
         this.encodedCloak =
                 ditherBit
                         | quantizedStrength;
->>>>>>> 5cffd01 (Rendering in a happy state)
     }
 
     @Override
@@ -92,8 +60,6 @@ public final class CloakedParticleVertexConsumer implements VertexConsumer {
             int blue,
             int alpha
     ) {
-<<<<<<< HEAD
-=======
         /*
          * Keep the particle's own alpha unchanged here.
          *
@@ -101,7 +67,6 @@ public final class CloakedParticleVertexConsumer implements VertexConsumer {
          * cutout test. That allows a particle at 95% cloak to really render at
          * ~5% opacity instead of being discarded early by vanilla.
          */
->>>>>>> 5cffd01 (Rendering in a happy state)
         delegate.setColor(red, green, blue, alpha);
         return this;
     }
@@ -120,10 +85,6 @@ public final class CloakedParticleVertexConsumer implements VertexConsumer {
 
     @Override
     public VertexConsumer setUv2(int u, int v) {
-<<<<<<< HEAD
-        int encodedU = (u & ~0xF) | (encodedStrength & 0xF);
-        int encodedV = (v & ~0xF) | ((encodedStrength >>> 4) & 0xF);
-=======
         int encodedU =
                 (u & ~0xF)
                         | (encodedCloak & 0xF);
@@ -131,7 +92,6 @@ public final class CloakedParticleVertexConsumer implements VertexConsumer {
         int encodedV =
                 (v & ~0xF)
                         | ((encodedCloak >>> 4) & 0xF);
->>>>>>> 5cffd01 (Rendering in a happy state)
 
         delegate.setUv2(encodedU, encodedV);
         return this;

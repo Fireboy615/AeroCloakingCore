@@ -2,6 +2,7 @@ package net.fireboy.aerocloakingcore.client.screen;
 
 import net.fireboy.aerocloakingcore.client.CloakEasing;
 import net.fireboy.aerocloakingcore.cloak.CloakingServerSettings;
+import net.fireboy.aerocloakingcore.cloak.RopeCloakBehavior;
 import net.fireboy.aerocloakingcore.network.RequestServerConfigPayload;
 import net.fireboy.aerocloakingcore.network.ServerConfigClientState;
 import net.fireboy.aerocloakingcore.network.UpdateServerConfigPayload;
@@ -57,8 +58,13 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private static final int REVEAL_MULTIPLIER =
             FULLY_VISIBLE_DISTANCE + ROW_HEIGHT;
 
+    private static final int ROPE_HEADER =
+            REVEAL_MULTIPLIER + ROW_HEIGHT + SECTION_GAP;
+    private static final int ROPE_BEHAVIOR =
+            ROPE_HEADER + SECTION_HEADER_HEIGHT;
+
     private static final int CONTENT_HEIGHT =
-            REVEAL_MULTIPLIER + ROW_HEIGHT + BOTTOM_PADDING;
+            ROPE_BEHAVIOR + ROW_HEIGHT + BOTTOM_PADDING;
 
     private static final int SCROLLBAR_WIDTH = 6;
     private static final int SCROLLBAR_GAP = 8;
@@ -76,6 +82,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private Button easingButton;
     private Button visibleWhileAboardButton;
     private Button proximityRevealButton;
+    private Button ropeBehaviorButton;
 
     private Button cancelButton;
     private Button resetButton;
@@ -84,6 +91,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private CloakEasing transitionEasing = CloakEasing.SMOOTHSTEP;
     private boolean visibleWhileAboard = true;
     private boolean proximityRevealEnabled = true;
+    private RopeCloakBehavior ropeCloakBehavior = RopeCloakBehavior.GRADIENT;
 
     private boolean valuesLoaded;
     private boolean canEdit;
@@ -203,6 +211,12 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                 controlWidth,
                 "screen.aerocloakingcore.server_config.reveal_distance_multiplier"
         );
+        ropeBehaviorButton = addRenderableWidget(
+                Button.builder(ropeBehaviorMessage(), button -> cycleRopeBehavior())
+                        .bounds(controlX, 0, controlWidth, 20)
+                        .build()
+        );
+
 
         cancelButton = addRenderableWidget(
                 Button.builder(CommonComponents.GUI_CANCEL, button -> onClose())
@@ -422,7 +436,8 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                     parseFloat(leaveFade),
                     proximityRevealEnabled,
                     parseDouble(fullyVisibleDistance),
-                    parseDouble(revealDistanceMultiplier)
+                    parseDouble(revealDistanceMultiplier),
+                    ropeCloakBehavior
             ).normalized();
 
             PacketDistributor.sendToServer(new UpdateServerConfigPayload(settings));
@@ -475,6 +490,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         }
 
         proximityRevealEnabled = normalized.proximityRevealEnabled();
+        ropeCloakBehavior = normalized.ropeCloakBehavior();
 
         if (fullyVisibleDistance != null) {
             fullyVisibleDistance.setValue(
@@ -505,6 +521,22 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         );
     }
 
+    private void cycleRopeBehavior() {
+        RopeCloakBehavior[] values = RopeCloakBehavior.values();
+        int next = (ropeCloakBehavior.ordinal() + 1) % values.length;
+        ropeCloakBehavior = values[next];
+        if (ropeBehaviorButton != null) {
+            ropeBehaviorButton.setMessage(ropeBehaviorMessage());
+        }
+    }
+
+    private Component ropeBehaviorMessage() {
+        return Component.translatable(
+                "screen.aerocloakingcore.server_config.rope_behavior."
+                        + ropeCloakBehavior.name().toLowerCase(Locale.ROOT)
+        );
+    }
+
     private static Component toggleMessage(boolean enabled) {
         return Component.literal(enabled ? "ON" : "OFF");
     }
@@ -520,6 +552,10 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
 
         if (proximityRevealButton != null) {
             proximityRevealButton.setMessage(toggleMessage(proximityRevealEnabled));
+        }
+
+        if (ropeBehaviorButton != null) {
+            ropeBehaviorButton.setMessage(ropeBehaviorMessage());
         }
     }
 
@@ -543,6 +579,10 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
 
         if (proximityRevealButton != null) {
             proximityRevealButton.active = editable;
+        }
+
+        if (ropeBehaviorButton != null) {
+            ropeBehaviorButton.active = editable;
         }
 
         if (resetButton != null) {
@@ -592,6 +632,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         positionWidget(proximityRevealButton, PROXIMITY_REVEAL);
         positionWidget(fullyVisibleDistance, FULLY_VISIBLE_DISTANCE);
         positionWidget(revealDistanceMultiplier, REVEAL_MULTIPLIER);
+        positionWidget(ropeBehaviorButton, ROPE_BEHAVIOR);
     }
 
     private void positionWidget(AbstractWidget widget, int contentY) {
@@ -774,6 +815,17 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                 "screen.aerocloakingcore.server_config.reveal_distance_multiplier"
         );
 
+        drawSectionHeader(
+                guiGraphics,
+                ROPE_HEADER,
+                "screen.aerocloakingcore.server_config.section.ropes"
+        );
+        drawRowLabel(
+                guiGraphics,
+                ROPE_BEHAVIOR,
+                "screen.aerocloakingcore.server_config.rope_behavior"
+        );
+
         renderContentWidget(transitionDuration, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(easingButton, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(visibleWhileAboardButton, guiGraphics, mouseX, mouseY, partialTick);
@@ -783,6 +835,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         renderContentWidget(proximityRevealButton, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(fullyVisibleDistance, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(revealDistanceMultiplier, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(ropeBehaviorButton, guiGraphics, mouseX, mouseY, partialTick);
 
         guiGraphics.disableScissor();
 

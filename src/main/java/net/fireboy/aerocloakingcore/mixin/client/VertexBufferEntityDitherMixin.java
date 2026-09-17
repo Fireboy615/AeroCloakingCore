@@ -2,7 +2,6 @@ package net.fireboy.aerocloakingcore.mixin.client;
 
 import com.mojang.blaze3d.vertex.VertexBuffer;
 
-import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.client.EntityCloakRenderState;
 
 import net.minecraft.client.renderer.ShaderInstance;
@@ -18,11 +17,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 
 /**
- * Applies entity dither after Minecraft has actually bound/applied the shader.
+ * Applies the dither component of the active cloak state after Minecraft has
+ * actually bound/applied the shader.
  *
- * RenderType.draw() calls BufferUploader.drawWithShader(), which in turn calls
- * ShaderInstance.apply() immediately before the VBO draw. Setting the raw GL
- * uniform any earlier gets lost because the shader has not been applied yet.
+ * The dither amount is now independent from the alpha component.  Ordinary
+ * DITHER entities still receive exactly their cloak strength, while rope
+ * segments can use both components at once during a dither<->alpha transition.
  */
 @Mixin(VertexBuffer.class)
 public abstract class VertexBufferEntityDitherMixin {
@@ -48,13 +48,8 @@ public abstract class VertexBufferEntityDitherMixin {
 
         aerocloakingcore$entityDitherUniformLocation = -1;
 
-        if (EntityCloakRenderState.getRenderMode()
-                != CloakRenderMode.DITHER) {
-            return;
-        }
-
         float cloakStrength =
-                EntityCloakRenderState.getCloakStrength();
+                EntityCloakRenderState.getDitherStrength();
 
         if (cloakStrength <= 0.001F) {
             return;

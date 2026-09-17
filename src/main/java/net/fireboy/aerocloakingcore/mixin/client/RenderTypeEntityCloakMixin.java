@@ -16,10 +16,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 
 /**
- * Handles ALPHA mode for partially cloaked entities.
+ * Applies the alpha component of the active cloak state.
  *
- * DITHER mode is intentionally handled later in VertexBufferEntityDitherMixin,
- * after ShaderInstance.apply(), so the raw shader uniform is not overwritten.
+ * Normal entity/block-entity ALPHA rendering still behaves exactly as before.
+ * Rope segments may additionally combine this alpha multiplier with dither so
+ * a strand can transition continuously from a DITHER endpoint to an ALPHA
+ * endpoint without forcing the entire rope into one render technique.
  */
 @Mixin(RenderType.class)
 public abstract class RenderTypeEntityCloakMixin {
@@ -57,18 +59,7 @@ public abstract class RenderTypeEntityCloakMixin {
 
         aerocloakingcore$modifiedEntityAlphaState = false;
 
-        if (!EntityCloakRenderState.getRenderMode().isAlpha()) {
-            return;
-        }
-
-        float cloakStrength =
-                EntityCloakRenderState.getCloakStrength();
-
-        if (cloakStrength <= 0.001F) {
-            return;
-        }
-
-        float alpha = 1.0F - cloakStrength;
+        float alpha = EntityCloakRenderState.getAlphaMultiplier();
 
         if (alpha >= 0.999F) {
             return;

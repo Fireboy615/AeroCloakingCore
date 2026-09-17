@@ -2,6 +2,7 @@ package net.fireboy.aerocloakingcore.server.config;
 
 import net.fireboy.aerocloakingcore.client.CloakEasing;
 import net.fireboy.aerocloakingcore.cloak.CloakingServerSettings;
+import net.fireboy.aerocloakingcore.cloak.RopeCloakBehavior;
 
 import net.neoforged.neoforge.common.ModConfigSpec;
 
@@ -21,6 +22,8 @@ public final class AeroCloakingCoreServerConfig {
     public static final ModConfigSpec.BooleanValue PROXIMITY_REVEAL_ENABLED;
     public static final ModConfigSpec.DoubleValue FULLY_VISIBLE_DISTANCE;
     public static final ModConfigSpec.DoubleValue REVEAL_DISTANCE_MULTIPLIER;
+
+    public static final ModConfigSpec.EnumValue<RopeCloakBehavior> ROPE_CLOAK_BEHAVIOR;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -78,6 +81,19 @@ public final class AeroCloakingCoreServerConfig {
                         "starts revealing 14 blocks from its bounds and is fully visible at 4 blocks."
                 )
                 .defineInRange("revealDistanceMultiplier", 1.0, 0.0, 10.0);
+
+        builder.pop();
+
+        builder
+                .comment("How Simulated rope strands connected to cloaked sublevels should render.")
+                .push("ropes");
+
+        ROPE_CLOAK_BEHAVIOR = builder
+                .comment(
+                        "GRADIENT interpolates cloak strength between both rope endpoints.",
+                        "INHERIT_STRONGEST applies the strongest endpoint cloak to the whole rope."
+                )
+                .defineEnum("cloakBehavior", RopeCloakBehavior.GRADIENT);
 
         builder.pop();
 
@@ -139,6 +155,7 @@ public final class AeroCloakingCoreServerConfig {
         PROXIMITY_REVEAL_ENABLED.set(normalized.proximityRevealEnabled());
         FULLY_VISIBLE_DISTANCE.set(fullyVisibleDistance);
         REVEAL_DISTANCE_MULTIPLIER.set(revealMultiplier);
+        ROPE_CLOAK_BEHAVIOR.set(normalized.ropeCloakBehavior());
 
         SPEC.save();
         return CloakingServerSettings.fromConfig();

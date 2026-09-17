@@ -445,6 +445,10 @@ public final class CloakingClient {
         return SERVER_SETTINGS.proximityRevealEnabled();
     }
 
+    public static net.fireboy.aerocloakingcore.cloak.RopeCloakBehavior getRopeCloakBehavior() {
+        return SERVER_SETTINGS.ropeCloakBehavior();
+    }
+
     private static double fullyVisibleDistance(UUID subLevelId) {
         return SERVER_SETTINGS.fullyVisibleDistance();
     }

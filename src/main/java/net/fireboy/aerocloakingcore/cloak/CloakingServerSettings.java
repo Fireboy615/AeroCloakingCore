@@ -16,7 +16,8 @@ public record CloakingServerSettings(
         float leaveFadeSeconds,
         boolean proximityRevealEnabled,
         double fullyVisibleDistance,
-        double revealDistanceMultiplier
+        double revealDistanceMultiplier,
+        RopeCloakBehavior ropeCloakBehavior
 ) {
 
     /** Default distance from the sublevel bounds where proximity reveal is 100%. */
@@ -37,7 +38,8 @@ public record CloakingServerSettings(
             2.0F,
             true,
             DEFAULT_FULLY_VISIBLE_DISTANCE_BLOCKS,
-            1.0
+            1.0,
+            RopeCloakBehavior.GRADIENT
     );
 
     public static CloakingServerSettings fromConfig() {
@@ -50,7 +52,8 @@ public record CloakingServerSettings(
                 AeroCloakingCoreServerConfig.LEAVE_FADE_SECONDS.get().floatValue(),
                 AeroCloakingCoreServerConfig.PROXIMITY_REVEAL_ENABLED.get(),
                 AeroCloakingCoreServerConfig.FULLY_VISIBLE_DISTANCE.get(),
-                AeroCloakingCoreServerConfig.REVEAL_DISTANCE_MULTIPLIER.get()
+                AeroCloakingCoreServerConfig.REVEAL_DISTANCE_MULTIPLIER.get(),
+                AeroCloakingCoreServerConfig.ROPE_CLOAK_BEHAVIOR.get()
         ).normalized();
     }
 
@@ -64,7 +67,8 @@ public record CloakingServerSettings(
                 clamp(leaveFadeSeconds, 0.0F, 60.0F),
                 proximityRevealEnabled,
                 clamp(fullyVisibleDistance, 0.0, 64.0),
-                clamp(revealDistanceMultiplier, 0.0, 10.0)
+                clamp(revealDistanceMultiplier, 0.0, 10.0),
+                ropeCloakBehavior == null ? RopeCloakBehavior.GRADIENT : ropeCloakBehavior
         );
     }
 
@@ -80,6 +84,7 @@ public record CloakingServerSettings(
         buffer.writeBoolean(value.proximityRevealEnabled());
         buffer.writeDouble(value.fullyVisibleDistance());
         buffer.writeDouble(value.revealDistanceMultiplier());
+        buffer.writeVarInt(value.ropeCloakBehavior().ordinal());
     }
 
     public static CloakingServerSettings read(RegistryFriendlyByteBuf buffer) {
@@ -92,7 +97,8 @@ public record CloakingServerSettings(
                 buffer.readFloat(),
                 buffer.readBoolean(),
                 buffer.readDouble(),
-                buffer.readDouble()
+                buffer.readDouble(),
+                enumByOrdinal(RopeCloakBehavior.values(), buffer.readVarInt(), RopeCloakBehavior.GRADIENT)
         ).normalized();
     }
 

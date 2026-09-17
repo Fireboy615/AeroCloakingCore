@@ -69,5 +69,9 @@
   "aerocloakingcore.configuration.revealDistanceMultiplier": "Reveal Distance Multiplier",
   "screen.aerocloakingcore.server_config.reveal_distance_multiplier": "Reveal Range Multiplier",
   "item.aerocloakingcore.sublevel_compass": "Sublevel Compass",
-  "item.aerocloakingcore.sublevel_scanner": "Sublevel Scanner"
+  "item.aerocloakingcore.sublevel_scanner": "Sublevel Scanner",
+  "screen.aerocloakingcore.server_config.section.ropes": "Ropes",
+  "screen.aerocloakingcore.server_config.rope_behavior": "Rope cloak behaviour",
+  "screen.aerocloakingcore.server_config.rope_behavior.gradient": "Gradient",
+  "screen.aerocloakingcore.server_config.rope_behavior.inherit_strongest": "Inherit strongest"
 }

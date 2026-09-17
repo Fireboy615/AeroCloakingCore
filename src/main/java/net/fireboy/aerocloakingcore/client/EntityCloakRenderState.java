@@ -3,8 +3,13 @@ package net.fireboy.aerocloakingcore.client;
 import java.util.ArrayDeque;
 
 /**
- * Temporary render-thread state used while cloaked entity/block-entity
+ * Temporary render-thread state used while cloaked entity/block-entity/rope
  * geometry is being flushed.
+ *
+ * Besides the normal single-mode path this also supports a composite state
+ * where alpha blending and dither can both be active for the same draw.  The
+ * rope renderer uses that only while transitioning between a DITHER endpoint
+ * and an ALPHA/ALPHA_SURFACE endpoint.
  *
  * The state is stack-safe because a block-entity renderer may itself render
  * an item/entity that enters the same cloak path before returning.
@@ -17,6 +22,14 @@ public final class EntityCloakRenderState {
     private static final ThreadLocal<CloakRenderMode> ACTIVE_RENDER_MODE =
             ThreadLocal.withInitial(() -> CloakRenderMode.DITHER);
 
+    /** Amount of stable screen-space dither/discard to apply. */
+    private static final ThreadLocal<Float> ACTIVE_DITHER_STRENGTH =
+            ThreadLocal.withInitial(() -> 0.0F);
+
+    /** Multiplicative alpha applied to surviving fragments. */
+    private static final ThreadLocal<Float> ACTIVE_ALPHA_MULTIPLIER =
+            ThreadLocal.withInitial(() -> 1.0F);
+
     private static final ThreadLocal<ArrayDeque<State>> HISTORY =
             ThreadLocal.withInitial(ArrayDeque::new);
 
@@ -27,10 +40,66 @@ public final class EntityCloakRenderState {
             float cloakStrength,
             CloakRenderMode renderMode
     ) {
+        float strength = clamp(cloakStrength);
+        CloakRenderMode mode = renderMode != null
+                ? renderMode
+                : CloakRenderMode.DITHER;
+
+        beginInternal(
+                strength,
+                mode,
+                mode == CloakRenderMode.DITHER ? strength : 0.0F,
+                mode.isAlpha() ? 1.0F - strength : 1.0F
+        );
+    }
+
+    /**
+     * Starts a draw that may use dither and alpha at the same time.
+     *
+     * @param logicalCloakStrength the rope's ordinary cloak strength at this
+     *                             point (used by generic state queries)
+     * @param ditherStrength       screen-space discard amount, 0..1
+     * @param alphaMultiplier      alpha multiplier for surviving fragments,
+     *                             0..1
+     */
+    public static void beginComposite(
+            float logicalCloakStrength,
+            float ditherStrength,
+            float alphaMultiplier
+    ) {
+        float alpha = clamp(alphaMultiplier);
+        float dither = clamp(ditherStrength);
+
+        CloakRenderMode representativeMode =
+                alpha < 0.999F
+                        ? CloakRenderMode.ALPHA
+                        : CloakRenderMode.DITHER;
+
+        beginInternal(
+                clamp(logicalCloakStrength),
+                representativeMode,
+                dither,
+                alpha
+        );
+    }
+
+    /** Retained as a safe fallback for any older call sites. */
+    public static void begin(float cloakStrength) {
+        begin(cloakStrength, CloakRenderMode.DITHER);
+    }
+
+    private static void beginInternal(
+            float cloakStrength,
+            CloakRenderMode renderMode,
+            float ditherStrength,
+            float alphaMultiplier
+    ) {
         HISTORY.get().push(
                 new State(
                         ACTIVE_CLOAK_STRENGTH.get(),
-                        ACTIVE_RENDER_MODE.get()
+                        ACTIVE_RENDER_MODE.get(),
+                        ACTIVE_DITHER_STRENGTH.get(),
+                        ACTIVE_ALPHA_MULTIPLIER.get()
                 )
         );
 
@@ -40,11 +109,8 @@ public final class EntityCloakRenderState {
                         ? renderMode
                         : CloakRenderMode.DITHER
         );
-    }
-
-    /** Retained as a safe fallback for any older call sites. */
-    public static void begin(float cloakStrength) {
-        begin(cloakStrength, CloakRenderMode.DITHER);
+        ACTIVE_DITHER_STRENGTH.set(clamp(ditherStrength));
+        ACTIVE_ALPHA_MULTIPLIER.set(clamp(alphaMultiplier));
     }
 
     public static void end() {
@@ -53,20 +119,36 @@ public final class EntityCloakRenderState {
         if (history.isEmpty()) {
             ACTIVE_CLOAK_STRENGTH.set(0.0F);
             ACTIVE_RENDER_MODE.set(CloakRenderMode.DITHER);
+            ACTIVE_DITHER_STRENGTH.set(0.0F);
+            ACTIVE_ALPHA_MULTIPLIER.set(1.0F);
             return;
         }
 
         State previous = history.pop();
         ACTIVE_CLOAK_STRENGTH.set(previous.cloakStrength());
         ACTIVE_RENDER_MODE.set(previous.renderMode());
+        ACTIVE_DITHER_STRENGTH.set(previous.ditherStrength());
+        ACTIVE_ALPHA_MULTIPLIER.set(previous.alphaMultiplier());
     }
 
     public static float getCloakStrength() {
         return ACTIVE_CLOAK_STRENGTH.get();
     }
 
+    /**
+     * Alpha actually used by the current draw.  For ordinary ALPHA draws this
+     * is exactly 1 - cloakStrength; for DITHER it is 1.
+     */
     public static float getAlpha() {
-        return 1.0F - getCloakStrength();
+        return ACTIVE_ALPHA_MULTIPLIER.get();
+    }
+
+    public static float getAlphaMultiplier() {
+        return ACTIVE_ALPHA_MULTIPLIER.get();
+    }
+
+    public static float getDitherStrength() {
+        return ACTIVE_DITHER_STRENGTH.get();
     }
 
     public static CloakRenderMode getRenderMode() {
@@ -74,7 +156,9 @@ public final class EntityCloakRenderState {
     }
 
     public static boolean isActive() {
-        return getCloakStrength() > 0.001F;
+        return getCloakStrength() > 0.001F
+                || getDitherStrength() > 0.001F
+                || getAlphaMultiplier() < 0.999F;
     }
 
     private static float clamp(float value) {
@@ -83,7 +167,9 @@ public final class EntityCloakRenderState {
 
     private record State(
             float cloakStrength,
-            CloakRenderMode renderMode
+            CloakRenderMode renderMode,
+            float ditherStrength,
+            float alphaMultiplier
     ) {
     }
 }

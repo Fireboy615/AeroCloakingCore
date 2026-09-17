@@ -6,6 +6,9 @@ import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 
+import com.simibubi.create.foundation.blockEntity.SmartBlockEntity;
+import dev.simulated_team.simulated.content.blocks.rope.RopeStrandHolderBehavior;
+
 import net.fireboy.aerocloakingcore.client.BlockEntityCloakRenderQueue;
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
@@ -77,8 +80,11 @@ public abstract class BlockEntityRenderDispatcherCloakMixin {
             return;
         }
 
-        // At full cloak, submit no BER geometry at all.
-        if (cloakStrength >= 0.999F) {
+        // Normally a fully cloaked BER submits no geometry at all. Rope-holder
+        // BEs are the one exception: their renderer also owns Simulated's rope
+        // call, and the rope may need a visible gradient toward its other end.
+        if (cloakStrength >= 0.999F
+                && !aerocloakingcore$needsRopeRender(blockEntity)) {
             return;
         }
 
@@ -117,4 +123,19 @@ public abstract class BlockEntityRenderDispatcherCloakMixin {
                 cloakStrength
         );
     }
+    private static boolean aerocloakingcore$needsRopeRender(
+            BlockEntity blockEntity
+    ) {
+        if (!(blockEntity instanceof SmartBlockEntity smartBlockEntity)) {
+            return false;
+        }
+
+        RopeStrandHolderBehavior ropeHolder =
+                smartBlockEntity.getBehaviour(RopeStrandHolderBehavior.TYPE);
+
+        return ropeHolder != null
+                && ropeHolder.ownsRope()
+                && ropeHolder.getClientStrand() != null;
+    }
+
 }

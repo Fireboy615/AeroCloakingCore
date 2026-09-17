@@ -22,6 +22,8 @@
     "client.EntityRenderDispatcherMixin",
     "client.ParticleEngineCloakMixin",
     "client.RenderTypeEntityCloakMixin",
-    "client.VertexBufferEntityDitherMixin"
+    "client.VertexBufferEntityDitherMixin",
+    "client.RopeStrandRendererCloakMixin",
+    "client.LevelRendererRopeCloakMixin"
   ]
 }
