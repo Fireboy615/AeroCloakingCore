@@ -67,5 +67,7 @@
   "screen.aerocloakingcore.server_config.section.proximity": "Proximity Reveal",
   "screen.aerocloakingcore.server_config.reset": "Reset",
   "aerocloakingcore.configuration.revealDistanceMultiplier": "Reveal Distance Multiplier",
-  "screen.aerocloakingcore.server_config.reveal_distance_multiplier": "Reveal Range Multiplier"
+  "screen.aerocloakingcore.server_config.reveal_distance_multiplier": "Reveal Range Multiplier",
+  "item.aerocloakingcore.sublevel_compass": "Sublevel Compass",
+  "item.aerocloakingcore.sublevel_scanner": "Sublevel Scanner"
 }

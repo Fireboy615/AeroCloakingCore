@@ -16,7 +16,9 @@
     "client.FlywheelVisualizationManagerAccessor",
     "client.LevelRendererAlphaSubLevelMixin",
     "client.FlywheelLevelRendererAlphaMixin",
+    "client.LevelRendererAlphaBlockEntityMixin",
     "client.LevelRendererAlphaEntityMixin",
+    "client.BlockEntityRenderDispatcherCloakMixin",
     "client.EntityRenderDispatcherMixin",
     "client.RenderTypeEntityCloakMixin",
     "client.VertexBufferEntityDitherMixin"

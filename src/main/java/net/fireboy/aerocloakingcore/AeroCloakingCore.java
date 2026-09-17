@@ -56,6 +56,14 @@ public class AeroCloakingCore {
                     ModItems.CLOAKING_CORE.getId(),
                     ModItems.CLOAKING_CORE::get
             );
+            SimulatedTabIntegration.add(
+                    ModItems.SUBLEVEL_COMPASS.getId(),
+                    ModItems.SUBLEVEL_COMPASS::get
+            );
+            SimulatedTabIntegration.add(
+                    ModItems.SUBLEVEL_SCANNER.getId(),
+                    ModItems.SUBLEVEL_SCANNER::get
+            );
 
             LOGGER.info("Registered Aero Cloaking Core Simulated integration");
         });

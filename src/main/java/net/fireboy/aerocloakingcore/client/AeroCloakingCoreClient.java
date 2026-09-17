@@ -22,12 +22,18 @@ import net.fireboy.aerocloakingcore.client.render.CloakingCoreVisual;
 import net.fireboy.aerocloakingcore.client.screen.AeroCloakingCoreConfigScreen;
 import net.fireboy.aerocloakingcore.client.screen.CloakingCoreScreen;
 import net.fireboy.aerocloakingcore.menu.ModMenus;
+import net.fireboy.aerocloakingcore.item.ModItems;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.item.CompassItemPropertyFunction;
+import net.minecraft.client.renderer.item.ItemProperties;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
+import net.minecraft.world.item.component.LodestoneTracker;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -80,12 +86,27 @@ public final class AeroCloakingCoreClient {
     }
 
     private void clientSetup(FMLClientSetupEvent event) {
-        event.enqueueWork(() ->
-                SimpleBlockEntityVisualizer
-                        .builder(ModBlockEntities.CLOAKING_CORE.get())
-                        .factory(CloakingCoreVisual::new)
-                        .apply()
-        );
+        event.enqueueWork(() -> {
+            SimpleBlockEntityVisualizer
+                    .builder(ModBlockEntities.CLOAKING_CORE.get())
+                    .factory(CloakingCoreVisual::new)
+                    .apply();
+
+            ItemProperties.register(
+                    ModItems.SUBLEVEL_COMPASS.get(),
+                    ResourceLocation.withDefaultNamespace("angle"),
+                    new CompassItemPropertyFunction(
+                            (level, stack, entity) -> {
+                                LodestoneTracker tracker =
+                                        stack.get(DataComponents.LODESTONE_TRACKER);
+
+                                return tracker != null
+                                        ? tracker.target().orElse(null)
+                                        : null;
+                            }
+                    )
+            );
+        });
     }
 
     private void registerScreens(RegisterMenuScreensEvent event) {
