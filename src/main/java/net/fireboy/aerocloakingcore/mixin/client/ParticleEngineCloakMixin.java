@@ -16,6 +16,8 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.fireboy.aerocloakingcore.client.CloakedParticleVertexConsumer;
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.client.EntityCloakRenderState;
+import net.fireboy.aerocloakingcore.client.ParticleCloakShader;
+import net.fireboy.aerocloakingcore.client.ParticleCloakRenderQueue;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.Camera;
@@ -24,8 +26,12 @@ import net.minecraft.client.particle.Particle;
 import net.minecraft.client.particle.ParticleEngine;
 import net.minecraft.client.particle.ParticleRenderType;
 import net.minecraft.client.renderer.LightTexture;
+import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.texture.TextureManager;
+
+import org.lwjgl.opengl.GL11C;
+import org.lwjgl.opengl.GL14C;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -41,18 +47,23 @@ import java.util.function.Predicate;
 
 /**
  * Makes particles produced by a Sable sublevel inherit that sublevel's current
- * viewer-specific cloak strength.
+ * viewer-specific cloak strength AND render mode.
  *
  * Origin tracking is retained for the particle's whole lifetime, even after
- * the particle drifts away from the ship. The actual opacity is NOT frozen at
- * spawn time: every frame it uses the sublevel's current cloak strength. This
- * prevents old smoke/exhaust from revealing a ship that has just cloaked.
+ * the particle drifts away from the ship. Strength is looked up every render
+ * frame, so existing smoke/exhaust fades in real time as the cloak changes.
  *
- * Standard particle batches keep Minecraft's existing ordering. Cloak strength
- * is packed into ignored light-map bits per particle and the particle shader
- * multiplies the final alpha. Opaque/lit particle batches are temporarily
- * blended only for their final draw when they contain a partially cloaked
- * particle, then the previous blend state is restored immediately.
+ * Built-in Minecraft particle batches keep their normal batching/order. A
+ * small amount of per-particle cloak data is packed into unused low light-map
+ * bits and decoded by Aero's dedicated particle shader:
+ *
+ *   DITHER        -> stable screen-space fragment discard
+ *   ALPHA         -> true fragment alpha = original alpha * (1 - strength)
+ *   ALPHA_SURFACE -> same true alpha behaviour for particle sprites
+ *
+ * ALPHA_SURFACE intentionally matches ALPHA for particles because a particle
+ * is already a single camera-facing surface; the terrain-only depth pre-pass
+ * has no meaningful equivalent here.
  */
 @Mixin(value = ParticleEngine.class, priority = 500)
 public abstract class ParticleEngineCloakMixin {
@@ -72,14 +83,17 @@ public abstract class ParticleEngineCloakMixin {
     private static final ThreadLocal<ClientSubLevel>
             aerocloakingcore$tickingParticleOrigin = new ThreadLocal<>();
 
-    /** True when the current ParticleRenderType batch needs alpha blending. */
+    @Unique
+    private ParticleRenderType aerocloakingcore$currentRenderType;
+
+    @Unique
+    private boolean aerocloakingcore$currentBatchHasEncodedCloak;
+
     @Unique
     private boolean aerocloakingcore$currentBatchNeedsBlend;
 
 
-    /**
-     * Capture before Sable performs its initial plot-space -> world-space kick.
-     */
+    /** Capture before Sable performs its initial plot-space -> world-space kick. */
     @Inject(method = "add", at = @At("HEAD"))
     private void aerocloakingcore$captureParticleOriginBeforeKick(
             Particle particle,
@@ -141,14 +155,13 @@ public abstract class ParticleEngineCloakMixin {
     ) {
         aerocloakingcore$particleOrigins.clear();
         aerocloakingcore$tickingParticleOrigin.remove();
+        aerocloakingcore$currentRenderType = null;
+        aerocloakingcore$currentBatchHasEncodedCloak = false;
         aerocloakingcore$currentBatchNeedsBlend = false;
     }
 
 
-    /**
-     * Each particle render type owns one shared BufferBuilder. Reset the alpha
-     * requirement when Minecraft begins a new batch.
-     */
+    /** Reset per-batch state without changing Minecraft's batch order. */
     @Redirect(
             method = "render(Lnet/minecraft/client/renderer/LightTexture;Lnet/minecraft/client/Camera;FLnet/minecraft/client/renderer/culling/Frustum;Ljava/util/function/Predicate;)V",
             require = 1,
@@ -162,15 +175,19 @@ public abstract class ParticleEngineCloakMixin {
             Tesselator tesselator,
             TextureManager textureManager
     ) {
+        aerocloakingcore$currentRenderType = renderType;
+        aerocloakingcore$currentBatchHasEncodedCloak = false;
         aerocloakingcore$currentBatchNeedsBlend = false;
+
         return renderType.begin(tesselator, textureManager);
     }
 
 
     /**
-     * Standard particles stay in their normal batch; only their vertices carry
-     * the per-particle cloak strength. CUSTOM particles additionally get the
-     * existing entity alpha state as a fallback for immediate RenderType draws.
+     * Render a particle using its origin sublevel's current strength/mode.
+     *
+     * The full-cloak early return is kept because zero-alpha particle geometry
+     * would still write depth in several vanilla particle sheets.
      */
     @Redirect(
             method = "render(Lnet/minecraft/client/renderer/LightTexture;Lnet/minecraft/client/Camera;FLnet/minecraft/client/renderer/culling/Frustum;Ljava/util/function/Predicate;)V",
@@ -201,54 +218,84 @@ public abstract class ParticleEngineCloakMixin {
             return;
         }
 
-        // Preserve the successful v3 behaviour: full/out-of-range cloak emits
-        // no particle geometry at all.
         if (cloakStrength >= 0.999F) {
             return;
         }
 
-        aerocloakingcore$currentBatchNeedsBlend = true;
+        CloakRenderMode renderMode =
+                CloakingClient.getRenderMode(origin);
 
-        VertexConsumer cloakedBuffer =
-                new CloakedParticleVertexConsumer(
-                        buffer,
-                        cloakStrength
+        boolean builtInParticleBatch =
+                aerocloakingcore$usesAeroParticleShader(
+                        aerocloakingcore$currentRenderType
                 );
 
-        if (particle.getRenderType() == ParticleRenderType.CUSTOM) {
-            // Particles should fade smoothly even if terrain itself is using
-            // DITHER mode, so force the already-tested entity path to ALPHA.
-            EntityCloakRenderState.begin(
-                    cloakStrength,
-                    CloakRenderMode.ALPHA
+        /*
+         * True-alpha particle geometry must not be submitted in Minecraft's
+         * normal early/particle targets. Some sheets render before water and
+         * all particles render before clouds; writing their quad depth there
+         * recreates the same water/cloud hole we fixed for alpha BERs. Queue
+         * built-in alpha particles for the late world pass instead. DITHER
+         * remains in the normal particle pass and keeps its working ordering.
+         */
+        if (builtInParticleBatch && renderMode.isAlpha()) {
+            ParticleCloakRenderQueue.enqueueAlpha(
+                    particle,
+                    aerocloakingcore$currentRenderType,
+                    origin,
+                    camera,
+                    partialTick
             );
-
-            try {
-                particle.render(
-                        cloakedBuffer,
-                        camera,
-                        partialTick
-                );
-            } finally {
-                EntityCloakRenderState.end();
-            }
-
             return;
         }
 
-        particle.render(
-                cloakedBuffer,
-                camera,
-                partialTick
+        VertexConsumer cloakedBuffer = buffer;
+
+        if (builtInParticleBatch) {
+            cloakedBuffer = new CloakedParticleVertexConsumer(
+                    buffer,
+                    cloakStrength,
+                    renderMode
+            );
+
+            aerocloakingcore$currentBatchHasEncodedCloak = true;
+
+            if (renderMode.isAlpha()) {
+                aerocloakingcore$currentBatchNeedsBlend = true;
+            }
+        }
+
+        /*
+         * CUSTOM particles often ignore the supplied BufferBuilder and issue
+         * immediate RenderType draws of their own. The existing entity/block-
+         * entity cloak state gives those draws the same mode as a fallback.
+         * It is harmless for ordinary particles that only write vertices.
+         */
+        EntityCloakRenderState.begin(
+                cloakStrength,
+                renderMode
         );
+
+        try {
+            particle.render(
+                    cloakedBuffer,
+                    camera,
+                    partialTick
+            );
+        } finally {
+            EntityCloakRenderState.end();
+        }
     }
 
 
     /**
-     * Vanilla's opaque/lit particle sheets normally disable blending. If this
-     * batch contains any partially cloaked particle, enable normal alpha blend
-     * only around the actual GPU draw and immediately restore the old state.
-     * This avoids leaking render state into water, clouds, or later passes.
+     * Draw the existing particle batch with Aero's dedicated particle shader
+     * only when that batch actually contains encoded cloaked particles.
+     *
+     * Alpha modes temporarily enable standard source-alpha blending for opaque
+     * vanilla sheets. Blend factors, blend enable state, and the previously
+     * selected shader are restored immediately after the draw so no particle
+     * state leaks into water/cloud/terrain rendering.
      */
     @Redirect(
             method = "render(Lnet/minecraft/client/renderer/LightTexture;Lnet/minecraft/client/Camera;FLnet/minecraft/client/renderer/culling/Frustum;Ljava/util/function/Predicate;)V",
@@ -258,29 +305,82 @@ public abstract class ParticleEngineCloakMixin {
                     target = "Lcom/mojang/blaze3d/vertex/BufferUploader;drawWithShader(Lcom/mojang/blaze3d/vertex/MeshData;)V"
             )
     )
-    private void aerocloakingcore$drawParticleBatchWithCloakAlpha(
+    private void aerocloakingcore$drawParticleBatchWithCloak(
             MeshData meshData
     ) {
-        if (!aerocloakingcore$currentBatchNeedsBlend) {
-            BufferUploader.drawWithShader(meshData);
-            return;
+        ShaderInstance cloakShader = ParticleCloakShader.get();
+
+        boolean useCloakShader =
+                cloakShader != null
+                        && aerocloakingcore$currentBatchHasEncodedCloak
+                        && aerocloakingcore$usesAeroParticleShader(
+                                aerocloakingcore$currentRenderType
+                        );
+
+        ShaderInstance previousShader =
+                RenderSystem.getShader();
+
+        boolean blendWasEnabled =
+                GL11C.glIsEnabled(GL11C.GL_BLEND);
+
+        boolean changedBlendState =
+                aerocloakingcore$currentBatchNeedsBlend
+                        && !blendWasEnabled;
+
+        int previousBlendSrcRgb = 0;
+        int previousBlendDstRgb = 0;
+        int previousBlendSrcAlpha = 0;
+        int previousBlendDstAlpha = 0;
+
+        if (changedBlendState) {
+            previousBlendSrcRgb =
+                    GL11C.glGetInteger(GL14C.GL_BLEND_SRC_RGB);
+            previousBlendDstRgb =
+                    GL11C.glGetInteger(GL14C.GL_BLEND_DST_RGB);
+            previousBlendSrcAlpha =
+                    GL11C.glGetInteger(GL14C.GL_BLEND_SRC_ALPHA);
+            previousBlendDstAlpha =
+                    GL11C.glGetInteger(GL14C.GL_BLEND_DST_ALPHA);
+
+            RenderSystem.enableBlend();
+            RenderSystem.defaultBlendFunc();
         }
 
-        RenderSystem.enableBlend();
-        RenderSystem.defaultBlendFunc();
+        if (useCloakShader) {
+            RenderSystem.setShader(() -> cloakShader);
+        }
 
         try {
             BufferUploader.drawWithShader(meshData);
         } finally {
-            /*
-             * Nothing is drawn between this call and the next particle type's
-             * begin(), and ParticleEngine also disables blending when the
-             * whole particle pass finishes. Restoring to disabled here keeps
-             * this override tightly scoped and prevents state leaking out.
-             */
-            RenderSystem.disableBlend();
+            if (useCloakShader && previousShader != null) {
+                RenderSystem.setShader(() -> previousShader);
+            }
+
+            if (changedBlendState) {
+                RenderSystem.blendFuncSeparate(
+                        previousBlendSrcRgb,
+                        previousBlendDstRgb,
+                        previousBlendSrcAlpha,
+                        previousBlendDstAlpha
+                );
+                RenderSystem.disableBlend();
+            }
+
+            aerocloakingcore$currentBatchHasEncodedCloak = false;
             aerocloakingcore$currentBatchNeedsBlend = false;
         }
+    }
+
+
+    @Unique
+    private static boolean aerocloakingcore$usesAeroParticleShader(
+            ParticleRenderType renderType
+    ) {
+        return renderType == ParticleRenderType.TERRAIN_SHEET
+                || renderType == ParticleRenderType.PARTICLE_SHEET_OPAQUE
+                || renderType == ParticleRenderType.PARTICLE_SHEET_TRANSLUCENT
+                || renderType == ParticleRenderType.PARTICLE_SHEET_LIT;
     }
 
 

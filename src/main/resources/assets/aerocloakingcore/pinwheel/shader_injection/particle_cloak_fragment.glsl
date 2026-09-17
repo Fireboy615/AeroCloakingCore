@@ -1,19 +1,7 @@
-in float AeroParticleCloakStrength;
-
 /*
- * Run after vanilla particle.fsh has sampled the texture and performed its
- * normal alpha cutoff. Applying cloak alpha here avoids vanilla's 0.1 cutoff
- * turning a smooth fade into a sudden disappearance near full cloak.
+ * Legacy no-op redirect retained so existing project copies can overwrite the
+ * older particle shader experiment safely. Particle cloaking now uses the
+ * dedicated aerocloakingcore:particle_cloak core shader.
  */
 void tail() {
-
-    if (AeroParticleCloakStrength > 0.0) {
-        float strength = clamp(
-                AeroParticleCloakStrength,
-                0.0,
-                1.0
-        );
-
-        fragColor.a *= 1.0 - strength;
-    }
 }

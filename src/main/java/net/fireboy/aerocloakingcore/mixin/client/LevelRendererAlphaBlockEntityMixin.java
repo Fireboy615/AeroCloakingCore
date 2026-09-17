@@ -1,6 +1,10 @@
 package net.fireboy.aerocloakingcore.mixin.client;
 
 import net.fireboy.aerocloakingcore.client.BlockEntityCloakRenderQueue;
+<<<<<<< HEAD
+=======
+import net.fireboy.aerocloakingcore.client.ParticleCloakRenderQueue;
+>>>>>>> 5cffd01 (Rendering in a happy state)
 
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
@@ -16,7 +20,11 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
+<<<<<<< HEAD
  * Owns the per-frame lifecycle of deferred ALPHA block entities.
+=======
+ * Owns the per-frame lifecycle of deferred ALPHA block entities and particles.
+>>>>>>> 5cffd01 (Rendering in a happy state)
  */
 @Mixin(value = LevelRenderer.class, priority = 1000)
 public abstract class LevelRendererAlphaBlockEntityMixin {
@@ -29,6 +37,10 @@ public abstract class LevelRendererAlphaBlockEntityMixin {
             CallbackInfo ci
     ) {
         BlockEntityCloakRenderQueue.beginFrame();
+<<<<<<< HEAD
+=======
+        ParticleCloakRenderQueue.beginFrame();
+>>>>>>> 5cffd01 (Rendering in a happy state)
     }
 
     @Inject(
@@ -50,5 +62,9 @@ public abstract class LevelRendererAlphaBlockEntityMixin {
             CallbackInfo ci
     ) {
         BlockEntityCloakRenderQueue.renderQueued();
+<<<<<<< HEAD
+=======
+        ParticleCloakRenderQueue.renderQueued(lightTexture);
+>>>>>>> 5cffd01 (Rendering in a happy state)
     }
 }
