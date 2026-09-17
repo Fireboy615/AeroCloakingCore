@@ -1,0 +1,6 @@
+{
+  "target": [
+    "minecraft:shaders/core/particle.fsh"
+  ],
+  "redirect": "aerocloakingcore:particle_cloak_fragment.glsl"
+}

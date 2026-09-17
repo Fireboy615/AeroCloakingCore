@@ -1,0 +1,6 @@
+{
+  "target": [
+    "minecraft:shaders/core/particle.vsh"
+  ],
+  "redirect": "aerocloakingcore:particle_cloak_vertex.glsl"
+}

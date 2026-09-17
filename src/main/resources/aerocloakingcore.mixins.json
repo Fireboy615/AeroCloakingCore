@@ -20,6 +20,7 @@
     "client.LevelRendererAlphaEntityMixin",
     "client.BlockEntityRenderDispatcherCloakMixin",
     "client.EntityRenderDispatcherMixin",
+    "client.ParticleEngineCloakMixin",
     "client.RenderTypeEntityCloakMixin",
     "client.VertexBufferEntityDitherMixin"
   ]
