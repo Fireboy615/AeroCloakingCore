@@ -13,11 +13,11 @@ float aeroBurnerDither(vec2 position) {
 }
 
 /*
- * DITHER is shader-side. ALPHA is handled with constant-alpha blending around
- * the direct BufferUploader flame draw, so it no longer depends on a custom
- * alpha uniform being present in the Veil shader.
+ * DITHER runs at the start of the fragment shader so every flame fragment is
+ * rejected with the same screen-space mask as the dithered sublevel hull.
+ * ALPHA is handled with constant-alpha blending around the direct flame draw.
  */
-void tail() {
+void head() {
     float ditherStrength = clamp(
         AeroCloakDitherStrength,
         0.0,

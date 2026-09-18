@@ -46,6 +46,16 @@ public final class AlphaSubLevelRenderQueue {
             new ArrayList<>();
 
     /**
+     * DITHER terrain is still drawn at Sable's normal time, but Aeronautics'
+     * burner flame is a direct late draw. Some Sable render paths do not
+     * leave the moving sublevel's depth in Minecraft's main depth buffer, so
+     * the late flame can otherwise draw over the hull. Capture the same
+     * opaque/cutout terrain layers for a late depth-only replay.
+     */
+    private static final List<DeferredSubLevelAlphaRender> DITHER_DEPTH_QUEUE =
+            new ArrayList<>();
+
+    /**
      * Prevent accidental duplicate capture of the same render-data/layer pair
      * during one frame while still allowing every distinct terrain layer.
      */
@@ -55,6 +65,12 @@ public final class AlphaSubLevelRenderQueue {
             > QUEUED_LAYERS =
             new IdentityHashMap<>();
 
+    private static final Map<
+            VanillaChunkedSubLevelRenderData,
+            Set<RenderType>
+            > DITHER_DEPTH_QUEUED_LAYERS =
+            new IdentityHashMap<>();
+
     /**
      * Surface-alpha depth is rendered separately immediately before Flywheel's
      * late alpha pass. That makes the main depth buffer available to Flywheel
@@ -62,6 +78,8 @@ public final class AlphaSubLevelRenderQueue {
      * rejected instead of showing through it.
      */
     private static boolean surfaceDepthPrepassRendered;
+
+    private static boolean ditherDepthPrepassRendered;
 
     private AlphaSubLevelRenderQueue() {
     }
@@ -127,8 +145,117 @@ public final class AlphaSubLevelRenderQueue {
         );
     }
 
+    public static void enqueueDitherDepth(
+            VanillaChunkedSubLevelRenderData renderData,
+            RenderType renderType,
+            Matrix4f modelView,
+            double cameraX,
+            double cameraY,
+            double cameraZ
+    ) {
+        if (!isDepthOccludingLayer(renderType)) {
+            return;
+        }
+
+        Set<RenderType> layers =
+                DITHER_DEPTH_QUEUED_LAYERS.computeIfAbsent(
+                        renderData,
+                        ignored -> Collections.newSetFromMap(
+                                new IdentityHashMap<>()
+                        )
+                );
+
+        if (!layers.add(renderType)) {
+            return;
+        }
+
+        float[] shaderColor = RenderSystem.getShaderColor();
+        float[] fogColor = RenderSystem.getShaderFogColor();
+
+        DITHER_DEPTH_QUEUE.add(
+                new DeferredSubLevelAlphaRender(
+                        renderData,
+                        renderType,
+                        new Matrix4f(modelView),
+                        new Matrix4f(RenderSystem.getProjectionMatrix()),
+                        new Matrix4f(RenderSystem.getTextureMatrix()),
+                        cameraX,
+                        cameraY,
+                        cameraZ,
+                        shaderColor[0],
+                        shaderColor[1],
+                        shaderColor[2],
+                        shaderColor[3],
+                        RenderSystem.getShaderGlintAlpha(),
+                        RenderSystem.getShaderFogStart(),
+                        RenderSystem.getShaderFogEnd(),
+                        fogColor[0],
+                        fogColor[1],
+                        fogColor[2],
+                        fogColor[3],
+                        RenderSystem.getShaderFogShape()
+                )
+        );
+    }
+
     public static boolean isEmpty() {
-        return QUEUE.isEmpty();
+        return QUEUE.isEmpty() && DITHER_DEPTH_QUEUE.isEmpty();
+    }
+
+    /**
+     * Replays DITHER solid/cutout terrain into the main depth buffer only.
+     * The normal dither shader remains active during this replay, so the depth
+     * mask is pixel-for-pixel identical to the visible dithered hull. A late
+     * direct effect using the same screen-space mask (notably the burner
+     * flame) is then rejected wherever the hull exists and discarded in the
+     * hull's holes.
+     */
+    public static void renderDitherDepthPrepass() {
+        if (ditherDepthPrepassRendered || DITHER_DEPTH_QUEUE.isEmpty()) {
+            return;
+        }
+
+        ditherDepthPrepassRendered = true;
+
+        float[] lateShaderColor = RenderSystem.getShaderColor().clone();
+        float lateShaderGlintAlpha = RenderSystem.getShaderGlintAlpha();
+        float lateFogStart = RenderSystem.getShaderFogStart();
+        float lateFogEnd = RenderSystem.getShaderFogEnd();
+        float[] lateFogColor = RenderSystem.getShaderFogColor().clone();
+        FogShape lateFogShape = RenderSystem.getShaderFogShape();
+        Matrix4f lateTextureMatrix =
+                new Matrix4f(RenderSystem.getTextureMatrix());
+
+        try {
+            for (DeferredSubLevelAlphaRender deferred : DITHER_DEPTH_QUEUE) {
+                var subLevel = deferred.renderData().getSubLevel();
+
+                if (CloakingClient.getRenderMode(subLevel)
+                        != CloakRenderMode.DITHER
+                        || CloakingClient.shouldHideSubLevel(subLevel)
+                        || !isDepthOccludingLayer(deferred.renderType())) {
+                    continue;
+                }
+
+                float strength = CloakingClient.getViewerCloakStrength(subLevel);
+                if (strength <= 0.0001F || strength >= 0.9999F) {
+                    continue;
+                }
+
+                restoreCapturedGlobals(deferred);
+                renderLayer(deferred, false, true);
+            }
+        } finally {
+            restoreLateGlobals(
+                    lateShaderColor,
+                    lateShaderGlintAlpha,
+                    lateFogStart,
+                    lateFogEnd,
+                    lateFogColor,
+                    lateFogShape,
+                    lateTextureMatrix
+            );
+        }
     }
 
     /**
@@ -202,6 +329,7 @@ public final class AlphaSubLevelRenderQueue {
      * Flywheel has nothing to render in a particular frame.
      */
     public static void renderQueued() {
+        renderDitherDepthPrepass();
         renderSurfaceDepthPrepass();
 
         float[] lateShaderColor =
@@ -257,7 +385,10 @@ public final class AlphaSubLevelRenderQueue {
     public static void clear() {
         QUEUE.clear();
         QUEUED_LAYERS.clear();
+        DITHER_DEPTH_QUEUE.clear();
+        DITHER_DEPTH_QUEUED_LAYERS.clear();
         surfaceDepthPrepassRendered = false;
+        ditherDepthPrepassRendered = false;
     }
 
     private static void restoreLateGlobals(

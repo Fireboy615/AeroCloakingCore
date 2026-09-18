@@ -11,13 +11,13 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
-import net.fireboy.aerocloakingcore.client.VeilUniformBridge;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.renderer.MultiBufferSource;
 
 import org.lwjgl.opengl.GL11C;
 import org.lwjgl.opengl.GL14C;
+import org.lwjgl.opengl.GL20C;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -29,8 +29,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * Applies the sublevel cloak to Aeronautics' direct burner-flame draw.
  *
  * <p>The flame bypasses MultiBufferSource and is drawn directly with Veil's
- * burner_flame shader. DITHER is sent to the injected flame shader through a
- * reflection bridge. ALPHA is intentionally implemented with fixed-function
+ * burner_flame shader. DITHER is sent directly to the injected flame shader's
+ * active OpenGL uniform. ALPHA is intentionally implemented with fixed-function
  * constant-alpha blending so it keeps working even if Veil's shader injection
  * changes between versions.</p>
  */
@@ -54,6 +54,12 @@ public abstract class HotAirBurnerRendererCloakMixin {
 
     @Unique
     private int aerocloakingcore$burnerPreviousBlendDstAlpha;
+
+    @Unique
+    private int aerocloakingcore$burnerDitherProgram;
+
+    @Unique
+    private int aerocloakingcore$burnerDitherUniform = -1;
 
     @Inject(
             method = "renderSafe",
@@ -97,15 +103,36 @@ public abstract class HotAirBurnerRendererCloakMixin {
             }
         }
 
-        boolean ditherAvailable = VeilUniformBridge.setFloat(
-                "AeroCloakDitherStrength",
-                ditherStrength
-        );
+        /*
+         * Aeronautics has already selected/bound burner_flame at this point.
+         * Write the injected uniform directly to the active GL program. This
+         * avoids relying on Veil's uniform wrapper upload timing and guarantees
+         * the flame uses the exact same screen-space dither mask as the hull.
+         */
+        aerocloakingcore$burnerDitherProgram =
+                GL11C.glGetInteger(GL20C.GL_CURRENT_PROGRAM);
+        aerocloakingcore$burnerDitherUniform = -1;
+
+        boolean ditherAvailable = false;
+        if (aerocloakingcore$burnerDitherProgram != 0) {
+            aerocloakingcore$burnerDitherUniform =
+                    GL20C.glGetUniformLocation(
+                            aerocloakingcore$burnerDitherProgram,
+                            "AeroCloakDitherStrength"
+                    );
+
+            if (aerocloakingcore$burnerDitherUniform >= 0) {
+                GL20C.glUniform1f(
+                        aerocloakingcore$burnerDitherUniform,
+                        clamp(ditherStrength)
+                );
+                ditherAvailable = true;
+            }
+        }
 
         /*
-         * If the dither uniform is unavailable, fall back to alpha. This is
-         * preferable to the old behaviour where a fully hidden ship still had
-         * a bright flame/heat marker floating in space.
+         * If the shader injection is unavailable, degrade to alpha rather than
+         * leaving a fully visible flame attached to a cloaked sublevel.
          */
         if (ditherStrength > 0.0F && !ditherAvailable) {
             alphaMultiplier *= 1.0F - ditherStrength;
@@ -163,7 +190,13 @@ public abstract class HotAirBurnerRendererCloakMixin {
             CallbackInfo ci
     ) {
         /* Prevent one burner from leaking dither state into the next. */
-        VeilUniformBridge.setFloat("AeroCloakDitherStrength", 0.0F);
+        int currentProgram = GL11C.glGetInteger(GL20C.GL_CURRENT_PROGRAM);
+        if (aerocloakingcore$burnerDitherUniform >= 0
+                && currentProgram == aerocloakingcore$burnerDitherProgram) {
+            GL20C.glUniform1f(aerocloakingcore$burnerDitherUniform, 0.0F);
+        }
+        aerocloakingcore$burnerDitherProgram = 0;
+        aerocloakingcore$burnerDitherUniform = -1;
 
         if (!aerocloakingcore$burnerChangedBlend) {
             return;

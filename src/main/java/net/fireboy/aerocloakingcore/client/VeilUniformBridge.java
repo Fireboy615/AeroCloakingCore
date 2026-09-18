@@ -9,6 +9,13 @@ import java.lang.reflect.Method;
  * not guaranteed to be present as a direct compile dependency for this addon.
  * Keeping this bridge reflective lets the hot-air fixes talk to Veil uniforms
  * without making Aero Cloaking Core depend on Veil's Java API directly.</p>
+ *
+ * <p>Important: Veil's ShaderProgram#getUniformSafe method takes a
+ * {@link CharSequence}, not a {@link String}. Reflection requires the exact
+ * declared parameter type, so looking it up with String.class silently made
+ * every custom Veil uniform appear unavailable. That caused the burner DITHER
+ * path to fall back to alpha blending instead of using the same screen-space
+ * discard mask as the sublevel hull.</p>
  */
 public final class VeilUniformBridge {
 
@@ -25,9 +32,7 @@ public final class VeilUniformBridge {
                 return false;
             }
 
-            Object uniform = shader.getClass()
-                    .getMethod("getUniformSafe", String.class)
-                    .invoke(shader, uniformName);
+            Object uniform = getUniform(shader, uniformName);
 
             if (uniform == null || !isValid(uniform)) {
                 return false;
@@ -55,9 +60,7 @@ public final class VeilUniformBridge {
                 return false;
             }
 
-            Object uniform = shader.getClass()
-                    .getMethod("getUniformSafe", String.class)
-                    .invoke(shader, uniformName);
+            Object uniform = getUniform(shader, uniformName);
 
             if (uniform == null || !isValid(uniform)) {
                 return false;
@@ -76,6 +79,53 @@ public final class VeilUniformBridge {
         } catch (ReflectiveOperationException ignored) {
             return false;
         }
+    }
+
+    private static Object getUniform(
+            Object shader,
+            String uniformName
+    ) throws ReflectiveOperationException {
+        Method getter;
+
+        try {
+            /* Veil 1.21.x API: getUniformSafe(CharSequence). */
+            getter = shader.getClass().getMethod(
+                    "getUniformSafe",
+                    CharSequence.class
+            );
+        } catch (NoSuchMethodException ignored) {
+            /* Compatibility fallback for any Veil build exposing String. */
+            try {
+                getter = shader.getClass().getMethod(
+                        "getUniformSafe",
+                        String.class
+                );
+            } catch (NoSuchMethodException ignoredAgain) {
+                getter = findCompatibleUniformGetter(shader.getClass());
+            }
+        }
+
+        if (getter == null) {
+            return null;
+        }
+
+        return getter.invoke(shader, uniformName);
+    }
+
+    private static Method findCompatibleUniformGetter(Class<?> shaderClass) {
+        for (Method method : shaderClass.getMethods()) {
+            if (!method.getName().equals("getUniformSafe")
+                    || method.getParameterCount() != 1) {
+                continue;
+            }
+
+            Class<?> parameterType = method.getParameterTypes()[0];
+            if (parameterType.isAssignableFrom(String.class)) {
+                return method;
+            }
+        }
+
+        return null;
     }
 
     private static Object currentShader() throws ReflectiveOperationException {

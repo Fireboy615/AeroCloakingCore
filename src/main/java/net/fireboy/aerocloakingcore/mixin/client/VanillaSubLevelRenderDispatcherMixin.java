@@ -4,6 +4,7 @@ import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
 
 import net.fireboy.aerocloakingcore.client.AlphaSubLevelRenderQueue;
+import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.renderer.RenderType;
@@ -99,15 +100,13 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
             double cameraZ
     ) {
 
-        boolean alphaCloakActive =
-                CloakingClient.getRenderMode(
-                        renderData.getSubLevel()
-                ).isAlpha()
-                        && CloakingClient.getCloakStrength(
-                                renderData.getSubLevel().getUniqueId()
-                        ) > 0.0001F;
+        ClientSubLevel subLevel = renderData.getSubLevel();
+        float cloakStrength =
+                CloakingClient.getViewerCloakStrength(subLevel);
+        CloakRenderMode renderMode =
+                CloakingClient.getRenderMode(subLevel);
 
-        if (!alphaCloakActive) {
+        if (cloakStrength <= 0.0001F) {
             renderData.renderChunkedSubLevel(
                     renderType,
                     shader,
@@ -119,13 +118,53 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
             return;
         }
 
-        /*
-         * Capture every layer while Minecraft/Sable still have that layer's
-         * proper shader, fog, lightmap, colour and matrices configured.
-         */
-        AlphaSubLevelRenderQueue.enqueue(
-                renderData,
+        if (renderMode == CloakRenderMode.DITHER) {
+            /*
+             * Keep the normal DITHER colour draw exactly where Sable put it,
+             * but also remember its opaque/cutout layers for a late depth-only
+             * replay. Aeronautics' burner flame is a direct draw and needs
+             * that main-target depth to match the visible dithered hull.
+             */
+            AlphaSubLevelRenderQueue.enqueueDitherDepth(
+                    renderData,
+                    renderType,
+                    modelView,
+                    cameraX,
+                    cameraY,
+                    cameraZ
+            );
+
+            renderData.renderChunkedSubLevel(
+                    renderType,
+                    shader,
+                    modelView,
+                    cameraX,
+                    cameraY,
+                    cameraZ
+            );
+            return;
+        }
+
+        if (renderMode.isAlpha()) {
+            /*
+             * Capture every layer while Minecraft/Sable still have that
+             * layer's proper shader, fog, lightmap, colour and matrices
+             * configured.
+             */
+            AlphaSubLevelRenderQueue.enqueue(
+                    renderData,
+                    renderType,
+                    modelView,
+                    cameraX,
+                    cameraY,
+                    cameraZ
+            );
+            return;
+        }
+
+        renderData.renderChunkedSubLevel(
                 renderType,
+                shader,
                 modelView,
                 cameraX,
                 cameraY,
