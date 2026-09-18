@@ -19,12 +19,14 @@ public record CloakingSyncPayload(
 
     public record Entry(
             UUID subLevelId,
+            UUID groupId,
             CloakingCoreSettings settings,
             float transitionDurationSeconds,
             double fullyCloakedDistance
     ) {
         public void write(RegistryFriendlyByteBuf buffer) {
             buffer.writeUUID(subLevelId);
+            buffer.writeUUID(groupId);
             settings.write(buffer);
             buffer.writeFloat(transitionDurationSeconds);
             buffer.writeDouble(fullyCloakedDistance);
@@ -32,6 +34,7 @@ public record CloakingSyncPayload(
 
         public static Entry read(RegistryFriendlyByteBuf buffer) {
             return new Entry(
+                    buffer.readUUID(),
                     buffer.readUUID(),
                     CloakingCoreSettings.read(buffer),
                     buffer.readFloat(),

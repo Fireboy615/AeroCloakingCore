@@ -188,7 +188,7 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
                 frequencies,
                 FREQUENCY_FIRST_SLOT,
                 14,
-                112,
+                132,
                 true
         ));
 
@@ -196,13 +196,13 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
                 frequencies,
                 FREQUENCY_SECOND_SLOT,
                 36,
-                112,
+                132,
                 false
         ));
 
         // Player inventory.
         int inventoryX = 7;
-        int inventoryY = 149;
+        int inventoryY = 169;
 
         for (int row = 0; row < 3; row++) {
             for (int column = 0; column < 9; column++) {
@@ -221,7 +221,7 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
                     inventory,
                     column,
                     inventoryX + column * 18,
-                    205
+                    225
             ));
         }
     }
@@ -320,12 +320,18 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
             Player player,
             boolean updateStrength,
             float cloakStrength,
-            CloakRenderMode renderMode
+            CloakRenderMode renderMode,
+            boolean cloakConnectedSubLevels,
+            boolean cloakRopeConnectedSubLevels
     ) {
         if (core == null || core.isRemoved()) {
             return;
         }
 
+        core.setConnectionOptions(
+                cloakConnectedSubLevels,
+                cloakRopeConnectedSubLevels
+        );
         core.setRenderMode(renderMode);
 
         if (updateStrength) {

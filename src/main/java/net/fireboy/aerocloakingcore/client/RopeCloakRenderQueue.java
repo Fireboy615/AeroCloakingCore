@@ -55,7 +55,8 @@ import java.util.List;
 public final class RopeCloakRenderQueue {
 
     private static final int BUFFER_SIZE = 262_144;
-    private static final double ENDPOINT_QUERY_RADIUS = 0.85;
+    private static final double ENDPOINT_QUERY_RADIUS = 2.5;
+    private static final int ENDPOINT_HOLDER_SEARCH_RADIUS = 2;
 
     private static final List<DeferredRope> ALPHA_QUEUE = new ArrayList<>();
 
@@ -90,6 +91,7 @@ public final class RopeCloakRenderQueue {
 
         EndpointState endpoints = resolveEndpointState(
                 blockEntity,
+                ropeHolder,
                 strand,
                 partialTick
         );
@@ -281,13 +283,15 @@ public final class RopeCloakRenderQueue {
 
     private static EndpointState resolveEndpointState(
             SmartBlockEntity owner,
+            RopeStrandHolderBehavior ownerHolder,
             ClientRopeStrand strand,
             float partialTick
     ) {
-        Level level = owner.getLevel();
+        Level ownerLevel = owner.getLevel();
+        Level rootLevel = Minecraft.getInstance().level;
         List<ClientRopePoint> points = strand.getPoints();
 
-        if (level == null || points.size() <= 1) {
+        if (ownerLevel == null || rootLevel == null || points.size() <= 1) {
             return null;
         }
 
@@ -301,65 +305,76 @@ public final class RopeCloakRenderQueue {
         );
 
         /*
-         * Simulated stores the rope physics points in projected/root-world
-         * coordinates.  startAttachment/endAttachment, however, come from
-         * each holder's own level and can therefore be plot/sublevel local.
+         * Do not trust ClientRopeStrand.startAttachment/endAttachment here.
+         * Simulated's client packet only carries each holder's BlockPos, not
+         * the sublevel UUID that BlockPos belongs to.  Resolving those positions
+         * through the owner's Level is therefore inherently ambiguous for
+         * world<->sublevel and sublevel<->sublevel ropes.
          *
-         * The old implementation correctly resolved which sublevel each
-         * attachment belonged to, but then assumed START always corresponded
-         * to points.getFirst().  That assumption is what produced the video
-         * symptom where the visible half of the gradient could float at the
-         * cloaked end of the rope.
-         *
-         * Resolve each attachment's cloak state, project its position into
-         * the same root-world coordinate space as the client rope points, and
-         * then choose the pairing with the smallest physical endpoint error.
-         * Placement/ownership direction can no longer influence the result.
+         * The owner itself is unambiguous, so anchor one rendered endpoint to
+         * the owner's real holder.  Then locate the holder at the other physical
+         * endpoint in the root world and nearby client sublevels.  This lets
+         * both world<->sublevel gradients and sublevel<->sublevel inheritance
+         * coexist without special-casing one at the expense of the other.
          */
-        ResolvedAttachment declaredStart = resolveAttachment(
-                level,
-                strand.startAttachment,
-                firstRenderedPoint
-        );
-        ResolvedAttachment declaredEnd = resolveAttachment(
-                level,
-                strand.endAttachment,
-                lastRenderedPoint
+        ResolvedAttachment ownerAttachment = resolveOwnerAttachment(
+                owner,
+                ownerHolder
         );
 
-        EndpointVisual firstVisual = declaredStart.visual();
-        EndpointVisual lastVisual = declaredEnd.visual();
-        boolean firstIsSublevel = declaredStart.sublevelEndpoint();
-        boolean lastIsSublevel = declaredEnd.sublevelEndpoint();
-
-        if (declaredStart.hasWorldPosition() && declaredEnd.hasWorldPosition()) {
-            double directError =
-                    firstRenderedPoint.distance(declaredStart.worldPosition())
-                            + lastRenderedPoint.distance(declaredEnd.worldPosition());
-
-            double swappedError =
-                    firstRenderedPoint.distance(declaredEnd.worldPosition())
-                            + lastRenderedPoint.distance(declaredStart.worldPosition());
-
-            // Give the existing ordering a tiny bias so numerical jitter
-            // cannot make a very short rope flip orientation frame-to-frame.
-            if (swappedError + 1.0E-4 < directError) {
-                firstVisual = declaredEnd.visual();
-                lastVisual = declaredStart.visual();
-                firstIsSublevel = declaredEnd.sublevelEndpoint();
-                lastIsSublevel = declaredStart.sublevelEndpoint();
-            }
+        boolean ownerIsFirst = true;
+        if (ownerAttachment.hasWorldPosition()) {
+            double firstError = firstRenderedPoint.distance(
+                    ownerAttachment.worldPosition()
+            );
+            double lastError = lastRenderedPoint.distance(
+                    ownerAttachment.worldPosition()
+            );
+            ownerIsFirst = firstError <= lastError;
         }
 
+        Vector3dc remoteRenderedPoint = ownerIsFirst
+                ? lastRenderedPoint
+                : firstRenderedPoint;
+
+        ResolvedAttachment remoteAttachment = findPhysicalRopeHolderEndpoint(
+                rootLevel,
+                owner,
+                remoteRenderedPoint
+        );
+
+        if (remoteAttachment == null) {
+            ClientSubLevel fallback = findEndpointSubLevel(
+                    rootLevel,
+                    remoteRenderedPoint
+            );
+            remoteAttachment = new ResolvedAttachment(
+                    EndpointVisual.of(fallback),
+                    new Vector3d(remoteRenderedPoint),
+                    true,
+                    fallback != null,
+                    fallback
+            );
+        }
+
+        ResolvedAttachment firstResolved = ownerIsFirst
+                ? ownerAttachment
+                : remoteAttachment;
+        ResolvedAttachment lastResolved = ownerIsFirst
+                ? remoteAttachment
+                : ownerAttachment;
+
+        EndpointVisual firstVisual = firstResolved.visual();
+        EndpointVisual lastVisual = lastResolved.visual();
+        boolean firstIsSublevel = firstResolved.sublevelEndpoint();
+        boolean lastIsSublevel = lastResolved.sublevelEndpoint();
+
         /*
-         * World has no cloak render technique of its own.  For a
-         * world<->sublevel rope, keep the world endpoint at strength 0 but
-         * render the entire gradient with the connected sublevel's mode.
-         * This means ALPHA<->world is pure alpha and DITHER<->world is pure
-         * dither regardless of which side created/owns the rope.
-         *
-         * Sublevel<->sublevel ropes keep their independent endpoint modes so
-         * DITHER<->ALPHA transitions still work exactly as before.
+         * World has no cloak technique of its own.  For a world<->sublevel
+         * rope the world end remains strength 0, but it uses the connected
+         * sublevel's rendering mode so the gradient is a pure alpha or pure
+         * dither gradient.  Sublevel<->sublevel ropes retain independent modes
+         * and the existing interpolation below is deliberately unchanged.
          */
         if (firstIsSublevel != lastIsSublevel) {
             if (firstIsSublevel) {
@@ -389,44 +404,189 @@ public final class RopeCloakRenderQueue {
         );
     }
 
-    private static ResolvedAttachment resolveAttachment(
-            Level level,
-            net.minecraft.world.phys.Vec3 attachment,
-            Vector3dc fallbackRenderedEndpoint
+    private static ResolvedAttachment resolveOwnerAttachment(
+            SmartBlockEntity owner,
+            RopeStrandHolderBehavior holder
     ) {
-        if (attachment == null) {
-            ClientSubLevel fallback = findEndpointSubLevel(
-                    level,
-                    fallbackRenderedEndpoint
+        SubLevel containing = Sable.HELPER.getContaining(owner);
+        ClientSubLevel subLevel = containing instanceof ClientSubLevel client
+                && !client.isRemoved()
+                ? client
+                : null;
+
+        net.minecraft.world.phys.Vec3 localAttachment = holder.getAttachmentPoint();
+        Vector3d worldPosition = toRootWorld(
+                owner.getLevel(),
+                subLevel,
+                localAttachment
+        );
+
+        return new ResolvedAttachment(
+                EndpointVisual.of(subLevel),
+                worldPosition,
+                true,
+                subLevel != null,
+                subLevel
+        );
+    }
+
+    /**
+     * Finds the actual rope-holder block entity nearest a rendered endpoint.
+     * This is intentionally based on real client block entities rather than
+     * Simulated's lossy client attachment BlockPos values.
+     */
+    private static ResolvedAttachment findPhysicalRopeHolderEndpoint(
+            Level rootLevel,
+            SmartBlockEntity owner,
+            Vector3dc renderedEndpoint
+    ) {
+        HolderCandidate best = findHolderInLevel(
+                rootLevel,
+                null,
+                owner,
+                renderedEndpoint
+        );
+
+        AABB query = new AABB(
+                renderedEndpoint.x() - ENDPOINT_QUERY_RADIUS,
+                renderedEndpoint.y() - ENDPOINT_QUERY_RADIUS,
+                renderedEndpoint.z() - ENDPOINT_QUERY_RADIUS,
+                renderedEndpoint.x() + ENDPOINT_QUERY_RADIUS,
+                renderedEndpoint.y() + ENDPOINT_QUERY_RADIUS,
+                renderedEndpoint.z() + ENDPOINT_QUERY_RADIUS
+        );
+
+        for (SubLevel candidate : Sable.HELPER.getAllIntersecting(
+                rootLevel,
+                new BoundingBox3d(query)
+        )) {
+            if (!(candidate instanceof ClientSubLevel clientSubLevel)
+                    || clientSubLevel.isRemoved()) {
+                continue;
+            }
+
+            HolderCandidate sublevelCandidate = findHolderInLevel(
+                    clientSubLevel.getLevel(),
+                    clientSubLevel,
+                    owner,
+                    renderedEndpoint
             );
-            return new ResolvedAttachment(
-                    EndpointVisual.of(fallback),
-                    new Vector3d(fallbackRenderedEndpoint),
-                    false,
-                    fallback != null
+
+            if (sublevelCandidate != null
+                    && (best == null
+                    || sublevelCandidate.distanceSquared() < best.distanceSquared())) {
+                best = sublevelCandidate;
+            }
+        }
+
+        if (best == null) {
+            return null;
+        }
+
+        return new ResolvedAttachment(
+                EndpointVisual.of(best.subLevel()),
+                best.worldPosition(),
+                true,
+                best.subLevel() != null,
+                best.subLevel()
+        );
+    }
+
+    private static HolderCandidate findHolderInLevel(
+            Level candidateLevel,
+            ClientSubLevel candidateSubLevel,
+            SmartBlockEntity owner,
+            Vector3dc renderedEndpoint
+    ) {
+        Vector3d localEndpoint = new Vector3d(renderedEndpoint);
+        if (candidateSubLevel != null) {
+            candidateSubLevel.renderPose().transformPositionInverse(localEndpoint);
+        }
+
+        BlockPos center = BlockPos.containing(
+                localEndpoint.x,
+                localEndpoint.y,
+                localEndpoint.z
+        );
+
+        HolderCandidate best = null;
+
+        for (int dx = -ENDPOINT_HOLDER_SEARCH_RADIUS;
+             dx <= ENDPOINT_HOLDER_SEARCH_RADIUS;
+             dx++) {
+            for (int dy = -ENDPOINT_HOLDER_SEARCH_RADIUS;
+                 dy <= ENDPOINT_HOLDER_SEARCH_RADIUS;
+                 dy++) {
+                for (int dz = -ENDPOINT_HOLDER_SEARCH_RADIUS;
+                     dz <= ENDPOINT_HOLDER_SEARCH_RADIUS;
+                     dz++) {
+                    BlockPos pos = center.offset(dx, dy, dz);
+                    var candidateBlockEntity = candidateLevel.getBlockEntity(pos);
+
+                    if (!(candidateBlockEntity instanceof SmartBlockEntity smart)
+                            || smart == owner) {
+                        continue;
+                    }
+
+                    RopeStrandHolderBehavior holder = smart.getBehaviour(
+                            RopeStrandHolderBehavior.TYPE
+                    );
+
+                    if (holder == null || !holder.isAttached()) {
+                        continue;
+                    }
+
+                    net.minecraft.world.phys.Vec3 localAttachment =
+                            holder.getAttachmentPoint();
+                    Vector3d worldAttachment = toRootWorld(
+                            candidateLevel,
+                            candidateSubLevel,
+                            localAttachment
+                    );
+                    double distanceSquared = worldAttachment.distanceSquared(
+                            renderedEndpoint
+                    );
+
+                    if (best == null
+                            || distanceSquared < best.distanceSquared()) {
+                        best = new HolderCandidate(
+                                candidateSubLevel,
+                                worldAttachment,
+                                distanceSquared
+                        );
+                    }
+                }
+            }
+        }
+
+        return best;
+    }
+
+    private static Vector3d toRootWorld(
+            Level level,
+            ClientSubLevel subLevel,
+            net.minecraft.world.phys.Vec3 localPosition
+    ) {
+        if (subLevel == null) {
+            return new Vector3d(
+                    localPosition.x,
+                    localPosition.y,
+                    localPosition.z
             );
         }
 
-        SubLevel containing = Sable.HELPER.getContaining(level, attachment);
-        ClientSubLevel clientSubLevel =
-                containing instanceof ClientSubLevel client
-                        && !client.isRemoved()
-                        ? client
-                        : null;
-
         net.minecraft.world.phys.Vec3 projected =
-                Sable.HELPER.projectOutOfSubLevel(level, attachment);
+                Sable.HELPER.projectOutOfSubLevel(level, localPosition);
 
-        Vector3d worldPosition = projected != null
-                ? new Vector3d(projected.x, projected.y, projected.z)
-                : new Vector3d(fallbackRenderedEndpoint);
+        if (projected == null) {
+            return new Vector3d(
+                    localPosition.x,
+                    localPosition.y,
+                    localPosition.z
+            );
+        }
 
-        return new ResolvedAttachment(
-                EndpointVisual.of(clientSubLevel),
-                worldPosition,
-                projected != null,
-                clientSubLevel != null
-        );
+        return new Vector3d(projected.x, projected.y, projected.z);
     }
 
     private static ClientSubLevel findEndpointSubLevel(
@@ -442,17 +602,39 @@ public final class RopeCloakRenderQueue {
                 position.z() + ENDPOINT_QUERY_RADIUS
         );
 
+        ClientSubLevel best = null;
+        double bestDistanceSquared = Double.POSITIVE_INFINITY;
+
         for (SubLevel subLevel : Sable.HELPER.getAllIntersecting(
                 level,
                 new BoundingBox3d(query)
         )) {
-            if (subLevel instanceof ClientSubLevel clientSubLevel
-                    && !clientSubLevel.isRemoved()) {
-                return clientSubLevel;
+            if (!(subLevel instanceof ClientSubLevel clientSubLevel)
+                    || clientSubLevel.isRemoved()) {
+                continue;
+            }
+
+            Vector3d local = new Vector3d(position);
+            clientSubLevel.renderPose().transformPositionInverse(local);
+
+            // Prefer the sublevel whose local-space endpoint is nearest to a
+            // real rope holder.  If none can be found, use bounds proximity as
+            // a last-resort classification only.
+            HolderCandidate holder = findHolderInLevel(
+                    clientSubLevel.getLevel(),
+                    clientSubLevel,
+                    null,
+                    position
+            );
+            if (holder != null && holder.distanceSquared() < bestDistanceSquared) {
+                best = clientSubLevel;
+                bestDistanceSquared = holder.distanceSquared();
+            } else if (best == null) {
+                best = clientSubLevel;
             }
         }
 
-        return null;
+        return best;
     }
 
     private static ObjectArrayList<RopeRenderPoint> buildRenderPoints(
@@ -572,11 +754,19 @@ public final class RopeCloakRenderQueue {
     ) {
     }
 
+    private record HolderCandidate(
+            ClientSubLevel subLevel,
+            Vector3d worldPosition,
+            double distanceSquared
+    ) {
+    }
+
     private record ResolvedAttachment(
             EndpointVisual visual,
             Vector3d worldPosition,
             boolean hasWorldPosition,
-            boolean sublevelEndpoint
+            boolean sublevelEndpoint,
+            ClientSubLevel subLevel
     ) {
     }
 

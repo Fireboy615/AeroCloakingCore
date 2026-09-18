@@ -3,6 +3,9 @@
   "minVersion": "0.8",
   "package": "net.fireboy.aerocloakingcore.mixin",
   "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "compat.BlazeBurnerSubLevelCollisionMixin"
+  ],
   "client": [
     "client.VanillaSubLevelRenderDispatcherMixin",
     "client.FancySubLevelRenderDispatcherMixin",

@@ -10,14 +10,16 @@ import net.minecraft.resources.ResourceLocation;
 /**
  * Updates per-core UI settings.
  *
- * updateStrength is separate so changing render mode alone does not steal
+ * updateStrength is separate so changing another setting alone does not steal
  * control from a Redstone Link. Moving the strength slider intentionally does.
  */
 public record UpdateCloakingCoreSettingsPayload(
         int containerId,
         boolean updateStrength,
         float cloakStrength,
-        CloakRenderMode renderMode
+        CloakRenderMode renderMode,
+        boolean cloakConnectedSubLevels,
+        boolean cloakRopeConnectedSubLevels
 ) implements CustomPacketPayload {
 
     public static final Type<UpdateCloakingCoreSettingsPayload> TYPE =
@@ -44,7 +46,9 @@ public record UpdateCloakingCoreSettingsPayload(
                             containerId,
                             updateStrength,
                             cloakStrength,
-                            mode
+                            mode,
+                            buffer.readBoolean(),
+                            buffer.readBoolean()
                     );
                 }
 
@@ -57,6 +61,8 @@ public record UpdateCloakingCoreSettingsPayload(
                     buffer.writeBoolean(payload.updateStrength());
                     buffer.writeFloat(payload.cloakStrength());
                     buffer.writeVarInt(payload.renderMode().ordinal());
+                    buffer.writeBoolean(payload.cloakConnectedSubLevels());
+                    buffer.writeBoolean(payload.cloakRopeConnectedSubLevels());
                 }
             };
 

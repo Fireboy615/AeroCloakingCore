@@ -2,6 +2,7 @@ package net.fireboy.aerocloakingcore.mixin.client;
 
 import net.fireboy.aerocloakingcore.client.BlockEntityCloakRenderQueue;
 import net.fireboy.aerocloakingcore.client.ParticleCloakRenderQueue;
+import net.fireboy.aerocloakingcore.client.RopeCloakRenderQueue;
 
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
@@ -52,6 +53,7 @@ public abstract class LevelRendererAlphaBlockEntityMixin {
             CallbackInfo ci
     ) {
         BlockEntityCloakRenderQueue.renderQueued();
+        RopeCloakRenderQueue.renderQueued();
         ParticleCloakRenderQueue.renderQueued(lightTexture);
     }
 }

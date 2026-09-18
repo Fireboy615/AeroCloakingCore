@@ -33,24 +33,26 @@ import java.util.function.DoubleFunction;
 public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu> {
 
     private static final int GUI_WIDTH = 176;
-    private static final int GUI_HEIGHT = 222;
+    private static final int GUI_HEIGHT = 242;
 
     private static final int CONTROL_X = 8;
     private static final int CONTROL_WIDTH = 160;
 
     private static final int INVENTORY_X = 7;
-    private static final int INVENTORY_Y = 149;
-    private static final int HOTBAR_Y = 205;
+    private static final int INVENTORY_Y = 169;
+    private static final int HOTBAR_Y = 225;
 
     private static final int FREQ_FIRST_X = 14;
     private static final int FREQ_SECOND_X = 36;
-    private static final int FREQ_Y = 112;
+    private static final int FREQ_Y = 132;
 
     /** Prevents an older server echo from snapping the slider backwards. */
     private static final long LOCAL_EDIT_GRACE_NANOS = 300_000_000L;
 
     private float cloakStrength;
     private CloakRenderMode renderMode;
+    private boolean cloakConnectedSubLevels;
+    private boolean cloakRopeConnectedSubLevels;
 
     private ValueSlider strengthSlider;
     private boolean draggingStrengthSlider;
@@ -69,6 +71,8 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         CloakingCoreSettings settings = menu.getInitialSettings();
         cloakStrength = settings.cloakStrength();
         renderMode = settings.renderMode();
+        cloakConnectedSubLevels = settings.cloakConnectedSubLevels();
+        cloakRopeConnectedSubLevels = settings.cloakRopeConnectedSubLevels();
     }
 
     @Override
@@ -108,6 +112,44 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                                 Component.literal("Render Mode"),
                                 (button, value) -> {
                                     renderMode = value;
+                                    sendSettings(false);
+                                }
+                        )
+        );
+
+        addRenderableWidget(
+                CycleButton.<Boolean>builder(
+                                value -> Component.literal(value ? "On" : "Off")
+                        )
+                        .withValues(Boolean.FALSE, Boolean.TRUE)
+                        .withInitialValue(cloakConnectedSubLevels)
+                        .create(
+                                leftPos + 8,
+                                topPos + 64,
+                                78,
+                                16,
+                                Component.literal("Attached"),
+                                (button, value) -> {
+                                    cloakConnectedSubLevels = value;
+                                    sendSettings(false);
+                                }
+                        )
+        );
+
+        addRenderableWidget(
+                CycleButton.<Boolean>builder(
+                                value -> Component.literal(value ? "On" : "Off")
+                        )
+                        .withValues(Boolean.FALSE, Boolean.TRUE)
+                        .withInitialValue(cloakRopeConnectedSubLevels)
+                        .create(
+                                leftPos + 90,
+                                topPos + 64,
+                                78,
+                                16,
+                                Component.literal("Ropes"),
+                                (button, value) -> {
+                                    cloakRopeConnectedSubLevels = value;
                                     sendSettings(false);
                                 }
                         )
@@ -227,7 +269,9 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                         menu.containerId,
                         updateStrength,
                         cloakStrength,
-                        renderMode
+                        renderMode,
+                        cloakConnectedSubLevels,
+                        cloakRopeConnectedSubLevels
                 )
         );
     }
@@ -253,7 +297,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 font,
                 Component.translatable("container.inventory"),
                 INVENTORY_X,
-                138,
+                158,
                 0x404040,
                 false
         );
@@ -266,17 +310,17 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 font,
                 Component.literal("Cloaking System"),
                 10,
-                65,
+                85,
                 0x4A3D2B,
                 false
         );
 
-        drawStatusIndicator(guiGraphics, status, 164, 68);
+        drawStatusIndicator(guiGraphics, status, 164, 88);
         drawRightAlignedString(
                 guiGraphics,
                 statusText(status),
                 158,
-                65,
+                85,
                 statusColor(status)
         );
 
@@ -288,7 +332,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 font,
                 Component.literal("CORE"),
                 leftX,
-                76,
+                96,
                 0x765F37,
                 false
         );
@@ -296,7 +340,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 font,
                 Component.literal("SHIP"),
                 rightX,
-                76,
+                96,
                 0x765F37,
                 false
         );
@@ -309,7 +353,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                         menu.getRpm()
                 )),
                 leftX,
-                86,
+                106,
                 0x343434,
                 false
         );
@@ -325,7 +369,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 guiGraphics,
                 shipLine,
                 rightEdge,
-                86,
+                106,
                 0.78F,
                 0x343434
         );
@@ -347,7 +391,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 font,
                 Component.literal(coreCapacity),
                 leftX,
-                95,
+                115,
                 0x565656,
                 false
         );
@@ -355,14 +399,14 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 guiGraphics,
                 shipCapacity,
                 rightEdge,
-                95,
+                115,
                 0x565656
         );
 
         drawCapacityBar(
                 guiGraphics,
                 leftX,
-                105,
+                125,
                 70,
                 menu.getAssignedBlocks(),
                 menu.getCorePotentialCapacity()
@@ -370,7 +414,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         drawCapacityBar(
                 guiGraphics,
                 rightX,
-                105,
+                125,
                 rightEdge - rightX,
                 menu.getSystemBlocks(),
                 menu.getSystemOperationalCapacity()
@@ -384,7 +428,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 menu.getRevealStartDistance(),
                 menu.getTransitionSeconds()
         );
-        drawScaledString(guiGraphics, metrics, 10, 110, 0.69F, 0x5E5140);
+        drawScaledString(guiGraphics, metrics, 10, 130, 0.69F, 0x5E5140);
     }
 
     private void drawRedstoneLink(GuiGraphics guiGraphics) {
@@ -392,7 +436,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 font,
                 Component.literal("Redstone Link"),
                 60,
-                116,
+                136,
                 0x40372D,
                 false
         );
@@ -400,7 +444,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                 guiGraphics,
                 "0-15 -> cloak strength",
                 60,
-                125,
+                145,
                 0.68F,
                 0x6C5A47
         );
@@ -618,17 +662,17 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         int right = leftPos + imageWidth;
 
         // Dark Create-style outline and grey title rail.
-        guiGraphics.fill(left - 2, top - 2, right + 2, top + 132, 0xFF282828);
+        guiGraphics.fill(left - 2, top - 2, right + 2, top + 152, 0xFF282828);
         guiGraphics.fill(left, top, right, top + 20, 0xFFAEB1AE);
         guiGraphics.fill(left + 2, top + 2, right - 2, top + 18, 0xFFBFC1BE);
         guiGraphics.fill(left, top + 18, right, top + 21, 0xFF555753);
 
         // Warm Create brass/canvas body.
-        guiGraphics.fill(left, top + 21, right, top + 130, 0xFFCBB595);
-        drawCreatePattern(guiGraphics, left + 2, top + 22, right - 2, top + 129);
+        guiGraphics.fill(left, top + 21, right, top + 150, 0xFFCBB595);
+        drawCreatePattern(guiGraphics, left + 2, top + 22, right - 2, top + 149);
 
         // Lower rail of the control module.
-        guiGraphics.fill(left, top + 130, right, top + 132, 0xFF78756F);
+        guiGraphics.fill(left, top + 150, right, top + 152, 0xFF78756F);
     }
 
     private void drawCreatePattern(
@@ -655,7 +699,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
 
     private void drawInventoryPanel(GuiGraphics guiGraphics) {
         int left = leftPos;
-        int top = topPos + 134;
+        int top = topPos + 154;
         int right = leftPos + imageWidth;
         int bottom = topPos + imageHeight;
 

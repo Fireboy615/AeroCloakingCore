@@ -11,52 +11,51 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
-import java.util.Iterator;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
- * Server-side coordinator for all Cloaking Cores attached to Sable sublevels.
+ * Server-side coordinator for connected Sable cloak groups.
  *
- * A sublevel owns one logical cloak system. Every core on that sublevel:
- * - contributes cloak capacity based on its RPM,
- * - receives a share of the ship's block load for stress calculations, and
- * - mirrors the same cloak strength/render mode settings.
- *
- * Any core may currently change the shared cloak settings. Redstone-control
- * arbitration is still intentionally left separate from the capacity/stress
- * model so the mechanical balance can be tested first.
+ * A Cloaking Core now contributes to one logical system made from every
+ * sublevel in its resolved Sable connection graph. The graph itself is found
+ * by the block entity, which allows normal connection actors and rope actors
+ * to be enabled independently. Connected cores are merged into the same group,
+ * member sublevels are counted once, and the resulting cloak state is published
+ * against every member UUID so the existing renderer remains per-sublevel.
  */
 @EventBusSubscriber(modid = AeroCloakingCore.MOD_ID)
 public final class CloakingManager {
 
-    /**
-     * The global transition-duration config is treated as the duration at this
-     * reference speed. Faster systems cloak more quickly with diminishing
-     * returns; slower operational systems cloak more slowly.
-     */
     public static final float CLOAK_SPEED_REFERENCE_RPM = 64.0F;
-
-    /** Ship-size reveal scaling is referenced to a 256-block sublevel. */
     public static final float REVEAL_REFERENCE_BLOCKS = 256.0F;
-
-    /** Extra concealment starts only once the average system RPM exceeds 128. */
     public static final float REVEAL_BONUS_START_RPM = 128.0F;
-
-    /** 256 RPM is treated as the practical maximum concealment-quality speed. */
     public static final float REVEAL_BONUS_MAX_RPM = 256.0F;
-
-    /**
-     * At 256 average RPM, retain 10% of the size-based reveal gap instead of
-     * collapsing it all the way onto the fully-visible distance.
-     */
     public static final float MIN_REVEAL_GAP_MULTIPLIER = 0.10F;
 
+    /** One entry per connected cloak group, keyed by a deterministic UUID. */
     private static final Map<UUID, CloakSystem> SYSTEMS = new LinkedHashMap<>();
+
+    /** Resolves any member sublevel UUID back to its connected cloak group. */
+    private static final Map<UUID, UUID> SUBLEVEL_TO_SYSTEM = new HashMap<>();
+
+    /** Latest once-per-second connectivity/block-count snapshot from each core. */
+    private static final Map<CloakingCoreBlockEntity, CoreRegistration> REGISTRATIONS =
+            new IdentityHashMap<>();
+
+    /** Most recently edited core wins if two previously separate systems merge. */
+    private static final Map<CloakingCoreBlockEntity, Long> SETTINGS_REVISIONS =
+            new IdentityHashMap<>();
+    private static long settingsRevisionCounter = 0L;
 
     private CloakingManager() {
     }
@@ -69,26 +68,35 @@ public final class CloakingManager {
             UUID subLevelId,
             CloakingCoreBlockEntity core
     ) {
-        if (subLevelId == null || core == null || core.isRemoved()) {
+        if (subLevelId == null || core == null || !isLive(core)) {
             return;
         }
 
-        CloakSystem system = SYSTEMS.computeIfAbsent(
-                subLevelId,
-                CloakSystem::new
-        );
+        Map<UUID, Integer> snapshot = snapshotFor(core, subLevelId);
+        CoreRegistration previous = REGISTRATIONS.get(core);
+        boolean topologyChanged = previous == null
+                || !subLevelId.equals(previous.homeSubLevelId)
+                || !snapshot.equals(previous.memberBlockCounts);
 
-        long key = core.getBlockPos().asLong();
-        boolean newlyAdded = system.cores.put(key, core) == null;
-
-        if (system.settings == null) {
-            system.settings = core.getSettings().normalized();
-        } else if (newlyAdded) {
-            // A newly-added auxiliary joins the existing ship-wide settings.
-            core.applySystemSettingsFromManager(system.settings);
+        if (topologyChanged) {
+            REGISTRATIONS.put(
+                    core,
+                    new CoreRegistration(subLevelId, snapshot)
+            );
+            SETTINGS_REVISIONS.putIfAbsent(core, 0L);
+            rebuildSystems();
+            return;
         }
 
-        recompute(system);
+        CloakSystem system = systemForSubLevel(subLevelId);
+        if (system == null || !system.cores.contains(core)) {
+            rebuildSystems();
+            return;
+        }
+
+        // Mechanical speed and overstress state can change every tick even when
+        // the connectivity/block-count snapshot has not changed.
+        recompute(system, true);
     }
 
     public static void setSystemSettings(
@@ -100,85 +108,258 @@ public final class CloakingManager {
             return;
         }
 
-        CloakSystem system = SYSTEMS.computeIfAbsent(
-                subLevelId,
-                CloakSystem::new
-        );
+        SETTINGS_REVISIONS.put(source, ++settingsRevisionCounter);
 
-        system.cores.put(source.getBlockPos().asLong(), source);
+        if (!REGISTRATIONS.containsKey(source)) {
+            REGISTRATIONS.put(
+                    source,
+                    new CoreRegistration(
+                            subLevelId,
+                            snapshotFor(source, subLevelId)
+                    )
+            );
+            rebuildSystems();
+        }
+
+        CloakSystem system = systemForSubLevel(subLevelId);
+        if (system == null) {
+            rebuildSystems();
+            system = systemForSubLevel(subLevelId);
+        }
+
+        if (system == null) {
+            return;
+        }
 
         CloakingCoreSettings normalized = settings.normalized();
         boolean changed = !normalized.equals(system.settings);
         system.settings = normalized;
 
         if (changed) {
-            for (CloakingCoreBlockEntity core : system.cores.values()) {
+            for (CloakingCoreBlockEntity core : system.cores) {
                 if (isLive(core)) {
                     core.applySystemSettingsFromManager(normalized);
                 }
             }
         }
 
-        recompute(system);
+        recompute(system, true);
     }
 
     public static void unregisterCore(
             UUID subLevelId,
             CloakingCoreBlockEntity core
     ) {
-        if (subLevelId == null || core == null) {
+        if (core == null) {
             return;
         }
 
-        CloakSystem system = SYSTEMS.get(subLevelId);
-        if (system == null) {
-            return;
+        if (REGISTRATIONS.remove(core) != null) {
+            SETTINGS_REVISIONS.remove(core);
+            rebuildSystems();
+        }
+    }
+
+    private static Map<UUID, Integer> snapshotFor(
+            CloakingCoreBlockEntity core,
+            UUID homeSubLevelId
+    ) {
+        Map<UUID, Integer> resolved = core.getResolvedSubLevelBlockCounts();
+
+        if (resolved == null || resolved.isEmpty()) {
+            return Map.of(
+                    homeSubLevelId,
+                    Math.max(0, core.getSubLevelBlockCount())
+            );
         }
 
-        long key = core.getBlockPos().asLong();
-        CloakingCoreBlockEntity registered = system.cores.get(key);
-
-        if (registered == core) {
-            system.cores.remove(key);
+        Map<UUID, Integer> normalized = new LinkedHashMap<>();
+        for (Map.Entry<UUID, Integer> entry : resolved.entrySet()) {
+            if (entry.getKey() != null) {
+                normalized.put(
+                        entry.getKey(),
+                        Math.max(0, entry.getValue() == null ? 0 : entry.getValue())
+                );
+            }
         }
 
-        pruneDeadCores(system);
+        normalized.putIfAbsent(
+                homeSubLevelId,
+                Math.max(0, core.getSubLevelBlockCount())
+        );
+        return Map.copyOf(normalized);
+    }
 
-        if (system.cores.isEmpty()) {
-            boolean hadPublishedState = system.publishedSettings != null;
-            SYSTEMS.remove(subLevelId);
+    /**
+     * Rebuilds connected components from every core's latest graph snapshot.
+     * Overlapping snapshots merge automatically, so a core on a swivel-mounted
+     * child joins the same system as a core on the parent craft.
+     */
+    private static void rebuildSystems() {
+        pruneDeadRegistrations();
 
-            if (hadPublishedState) {
+        boolean hadSystems = !SYSTEMS.isEmpty();
+        SYSTEMS.clear();
+        SUBLEVEL_TO_SYSTEM.clear();
+
+        if (REGISTRATIONS.isEmpty()) {
+            if (hadSystems) {
                 sync();
             }
             return;
         }
 
-        recompute(system);
+        UnionFind unionFind = new UnionFind();
+
+        for (CoreRegistration registration : REGISTRATIONS.values()) {
+            unionFind.add(registration.homeSubLevelId);
+
+            for (UUID memberId : registration.memberBlockCounts.keySet()) {
+                unionFind.add(memberId);
+                unionFind.union(registration.homeSubLevelId, memberId);
+            }
+        }
+
+        Map<UUID, List<Map.Entry<CloakingCoreBlockEntity, CoreRegistration>>>
+                registrationsByRoot = new LinkedHashMap<>();
+
+        for (Map.Entry<CloakingCoreBlockEntity, CoreRegistration> entry
+                : REGISTRATIONS.entrySet()) {
+            UUID root = unionFind.find(entry.getValue().homeSubLevelId);
+            registrationsByRoot
+                    .computeIfAbsent(root, ignored -> new ArrayList<>())
+                    .add(entry);
+        }
+
+        List<CloakSystem> rebuilt = new ArrayList<>();
+
+        for (List<Map.Entry<CloakingCoreBlockEntity, CoreRegistration>> component
+                : registrationsByRoot.values()) {
+            Set<UUID> memberIds = new LinkedHashSet<>();
+            Map<UUID, Integer> memberBlockCounts = new LinkedHashMap<>();
+            Set<CloakingCoreBlockEntity> cores = new LinkedHashSet<>();
+
+            for (Map.Entry<CloakingCoreBlockEntity, CoreRegistration> entry
+                    : component) {
+                cores.add(entry.getKey());
+
+                for (Map.Entry<UUID, Integer> member
+                        : entry.getValue().memberBlockCounts.entrySet()) {
+                    memberIds.add(member.getKey());
+                    memberBlockCounts.merge(
+                            member.getKey(),
+                            Math.max(0, member.getValue()),
+                            Math::max
+                    );
+                }
+            }
+
+            if (memberIds.isEmpty()) {
+                continue;
+            }
+
+            UUID systemId = memberIds.stream()
+                    .min(Comparator.comparing(UUID::toString))
+                    .orElseThrow();
+
+            CloakSystem system = new CloakSystem(systemId);
+            system.memberBlockCounts.putAll(memberBlockCounts);
+            system.cores.addAll(cores);
+
+            // Settings are already mirrored within an existing group. For a
+            // newly merged group choose deterministically, then mirror that one
+            // value to every core so subsequent rebuilds remain stable.
+            CloakingCoreBlockEntity settingsSource = component.stream()
+                    .sorted((a, b) -> {
+                        long revisionA = SETTINGS_REVISIONS.getOrDefault(
+                                a.getKey(), 0L
+                        );
+                        long revisionB = SETTINGS_REVISIONS.getOrDefault(
+                                b.getKey(), 0L
+                        );
+                        int revisionCompare = Long.compare(revisionB, revisionA);
+                        return revisionCompare != 0
+                                ? revisionCompare
+                                : compareRegistrations(a, b);
+                    })
+                    .map(Map.Entry::getKey)
+                    .findFirst()
+                    .orElse(null);
+
+            system.settings = settingsSource != null
+                    ? settingsSource.getSettings().normalized()
+                    : CloakingCoreSettings.DEFAULT;
+
+            for (CloakingCoreBlockEntity core : system.cores) {
+                if (isLive(core)) {
+                    core.applySystemSettingsFromManager(system.settings);
+                }
+            }
+
+            rebuilt.add(system);
+        }
+
+        rebuilt.sort(Comparator.comparing(system -> system.systemId.toString()));
+
+        for (CloakSystem system : rebuilt) {
+            SYSTEMS.put(system.systemId, system);
+            for (UUID memberId : system.memberBlockCounts.keySet()) {
+                SUBLEVEL_TO_SYSTEM.put(memberId, system.systemId);
+            }
+            recompute(system, false);
+        }
+
+        // Membership itself is render-relevant even if strength and derived
+        // statistics happen to be unchanged, so always publish after rebuild.
+        sync();
+    }
+
+    private static int compareRegistrations(
+            Map.Entry<CloakingCoreBlockEntity, CoreRegistration> a,
+            Map.Entry<CloakingCoreBlockEntity, CoreRegistration> b
+    ) {
+        int idCompare = a.getValue().homeSubLevelId.toString()
+                .compareTo(b.getValue().homeSubLevelId.toString());
+        if (idCompare != 0) {
+            return idCompare;
+        }
+
+        return Long.compare(
+                a.getKey().getBlockPos().asLong(),
+                b.getKey().getBlockPos().asLong()
+        );
     }
 
     // ---------------------------------------------------------------------
     // SYSTEM CALCULATION
     // ---------------------------------------------------------------------
 
-    private static void recompute(CloakSystem system) {
-        pruneDeadCores(system);
+    private static void recompute(CloakSystem system, boolean syncOnChange) {
+        system.cores.removeIf(core -> !isLive(core));
 
         if (system.cores.isEmpty()) {
-            SYSTEMS.remove(system.subLevelId);
-            sync();
+            if (SYSTEMS.remove(system.systemId) != null) {
+                system.memberBlockCounts.keySet().forEach(SUBLEVEL_TO_SYSTEM::remove);
+                if (syncOnChange) {
+                    sync();
+                }
+            }
             return;
         }
 
         if (system.settings == null) {
-            system.settings = system.cores.values()
-                    .iterator()
+            system.settings = system.cores.iterator()
                     .next()
                     .getSettings()
                     .normalized();
         }
 
-        int blockCount = 0;
+        long blockCountLong = 0L;
+        for (int count : system.memberBlockCounts.values()) {
+            blockCountLong += Math.max(0, count);
+        }
+        int blockCount = (int) Math.min(Integer.MAX_VALUE, blockCountLong);
+
         int totalPotentialCapacity = 0;
         int totalOperationalCapacity = 0;
         int potentialContributingCoreCount = 0;
@@ -187,9 +368,7 @@ public final class CloakingManager {
         double operationalRpmSum = 0.0;
         double potentialRpmSum = 0.0;
 
-        for (CloakingCoreBlockEntity core : system.cores.values()) {
-            blockCount = Math.max(blockCount, core.getSubLevelBlockCount());
-
+        for (CloakingCoreBlockEntity core : system.cores) {
             int potentialCapacity = core.getPotentialCloakCapacityBlocks();
             int operationalCapacity = core.getOperationalCloakCapacityBlocks();
 
@@ -208,34 +387,11 @@ public final class CloakingManager {
         }
 
         int coreCount = system.cores.size();
-
-        /*
-         * Multi-core SU efficiency is intentionally based on powered/potential
-         * contributors, not just blocks physically placed on the ship. A dead
-         * 0-RPM core therefore cannot be spammed for a free efficiency bonus.
-         *
-         * 1 core  = 100% efficiency
-         * 2 cores = 105%
-         * 3 cores = 110%
-         * 4 cores = 115%
-         * 5 cores = 120%
-         * 6+      = 125%
-         */
         float efficiencyFactor = calculateEfficiencyFactor(
                 potentialContributingCoreCount
         );
 
-        /*
-         * Load is distributed in proportion to each core's capacity. Because
-         * capacity itself is linear up to 128 RPM, faster cores naturally take
-         * more of the ship load until their 256-block cap is reached.
-         *
-         * If capacity is insufficient, assigned load may exceed a core's own
-         * capacity. That is deliberate: an oversized ship still presents the
-         * full attempted cloak stress instead of becoming cheaper just because
-         * it cannot currently be cloaked.
-         */
-        for (CloakingCoreBlockEntity core : system.cores.values()) {
+        for (CloakingCoreBlockEntity core : system.cores) {
             float assignedBlocks;
 
             if (totalPotentialCapacity > 0) {
@@ -257,18 +413,12 @@ public final class CloakingManager {
         boolean capacitySatisfied = blockCount > 0
                 && totalOperationalCapacity >= blockCount;
 
-        /*
-         * Cloak quality uses the plain arithmetic mean RPM of every operational
-         * contributing core. This deliberately prevents one 256-RPM core from
-         * granting high-RPM cloak bonuses to a bank of slow 32-RPM auxiliaries.
-         */
         float effectiveRpm;
         if (operationalContributingCoreCount > 0) {
             effectiveRpm = (float) (
                     operationalRpmSum / operationalContributingCoreCount
             );
         } else if (potentialContributingCoreCount > 0) {
-            // Keep useful diagnostics while the network is stalled/overstressed.
             effectiveRpm = (float) (
                     potentialRpmSum / potentialContributingCoreCount
             );
@@ -299,7 +449,7 @@ public final class CloakingManager {
         system.fullyCloakedDistance = fullyCloakedDistance;
         system.capacitySatisfied = capacitySatisfied;
 
-        for (CloakingCoreBlockEntity core : system.cores.values()) {
+        for (CloakingCoreBlockEntity core : system.cores) {
             core.applySystemStatsFromManager(
                     coreCount,
                     blockCount,
@@ -334,7 +484,7 @@ public final class CloakingManager {
         system.publishedTransitionDurationSeconds = transitionDuration;
         system.publishedFullyCloakedDistance = fullyCloakedDistance;
 
-        if (publishedChanged) {
+        if (publishedChanged && syncOnChange) {
             sync();
         }
     }
@@ -344,25 +494,12 @@ public final class CloakingManager {
             return 1.0F;
         }
 
-        // 1 core = 100%, 2 = 105%, ... 6+ = 125%.
-        // Stress is divided by this factor, so the UI can describe the value
-        // naturally as an efficiency increase rather than a cost multiplier.
         return Math.min(
                 1.25F,
                 1.0F + 0.05F * (contributingCoreCount - 1)
         );
     }
 
-    /**
-     * Calculates the distance where a fully cloaked ship begins to reveal.
-     *
-     * The fully-visible distance is server-configurable (4 blocks by default).
-     * A 1.0x server reveal multiplier gives a 10-block reveal gap for a
-     * 256-block ship at <=128
-     * average RPM, preserving the old 4 -> 14 behaviour. Larger ships expand
-     * the gap by sqrt(block count), while RPM above 128 compresses it down to
-     * 10% of its size-scaled value at 256 RPM.
-     */
     public static double calculateFullyCloakedDistance(
             double fullyVisibleDistance,
             double revealDistanceMultiplier,
@@ -418,22 +555,13 @@ public final class CloakingManager {
                 CLOAK_SPEED_REFERENCE_RPM / rpm
         );
 
-        // Create normally tops out around 256 RPM, but clamp the effect anyway
-        // so unusual modded speeds cannot make transitions effectively instant.
         multiplier = Math.max(0.35F, Math.min(2.0F, multiplier));
         return base * multiplier;
     }
 
-    private static void pruneDeadCores(CloakSystem system) {
-        Iterator<Map.Entry<Long, CloakingCoreBlockEntity>> iterator =
-                system.cores.entrySet().iterator();
-
-        while (iterator.hasNext()) {
-            CloakingCoreBlockEntity core = iterator.next().getValue();
-            if (!isLive(core)) {
-                iterator.remove();
-            }
-        }
+    private static void pruneDeadRegistrations() {
+        REGISTRATIONS.entrySet().removeIf(entry -> !isLive(entry.getKey()));
+        SETTINGS_REVISIONS.keySet().removeIf(core -> !REGISTRATIONS.containsKey(core));
     }
 
     private static boolean isLive(CloakingCoreBlockEntity core) {
@@ -443,29 +571,36 @@ public final class CloakingManager {
                 && !core.getLevel().isClientSide;
     }
 
+    private static CloakSystem systemForSubLevel(UUID subLevelId) {
+        UUID systemId = SUBLEVEL_TO_SYSTEM.get(subLevelId);
+        return systemId != null ? SYSTEMS.get(systemId) : null;
+    }
+
     // ---------------------------------------------------------------------
     // CLIENT SYNC
     // ---------------------------------------------------------------------
 
     private static CloakingSyncPayload createPayload() {
         CloakingServerSettings serverSettings = CloakingServerSettings.fromConfig();
+        List<CloakingSyncPayload.Entry> entries = new ArrayList<>();
 
-        List<CloakingSyncPayload.Entry> entries = SYSTEMS
-                .values()
-                .stream()
-                .filter(system -> system.publishedSettings != null)
-                .map(system -> new CloakingSyncPayload.Entry(
-                        system.subLevelId,
+        for (CloakSystem system : SYSTEMS.values()) {
+            if (system.publishedSettings == null) {
+                continue;
+            }
+
+            for (UUID memberId : system.memberBlockCounts.keySet()) {
+                entries.add(new CloakingSyncPayload.Entry(
+                        memberId,
+                        system.systemId,
                         system.publishedSettings,
                         system.publishedTransitionDurationSeconds,
                         system.publishedFullyCloakedDistance
-                ))
-                .toList();
+                ));
+            }
+        }
 
-        return new CloakingSyncPayload(
-                serverSettings,
-                entries
-        );
+        return new CloakingSyncPayload(serverSettings, entries);
     }
 
     public static void sync() {
@@ -477,11 +612,11 @@ public final class CloakingManager {
     }
 
     // ---------------------------------------------------------------------
-    // LEGACY / QUERY HELPERS
+    // QUERY HELPERS
     // ---------------------------------------------------------------------
 
     public static boolean isCloaked(UUID subLevelId) {
-        CloakSystem system = SYSTEMS.get(subLevelId);
+        CloakSystem system = systemForSubLevel(subLevelId);
         return system != null
                 && system.publishedSettings != null
                 && system.publishedSettings.cloakStrength() > 0.0F;
@@ -491,8 +626,12 @@ public final class CloakingManager {
         Map<UUID, CloakingCoreSettings> result = new HashMap<>();
 
         for (CloakSystem system : SYSTEMS.values()) {
-            if (system.publishedSettings != null) {
-                result.put(system.subLevelId, system.publishedSettings);
+            if (system.publishedSettings == null) {
+                continue;
+            }
+
+            for (UUID memberId : system.memberBlockCounts.keySet()) {
+                result.put(memberId, system.publishedSettings);
             }
         }
 
@@ -502,6 +641,10 @@ public final class CloakingManager {
     public static void clear() {
         boolean hadSystems = !SYSTEMS.isEmpty();
         SYSTEMS.clear();
+        SUBLEVEL_TO_SYSTEM.clear();
+        REGISTRATIONS.clear();
+        SETTINGS_REVISIONS.clear();
+        settingsRevisionCounter = 0L;
 
         if (hadSystems) {
             sync();
@@ -515,11 +658,20 @@ public final class CloakingManager {
         }
     }
 
+    private record CoreRegistration(
+            UUID homeSubLevelId,
+            Map<UUID, Integer> memberBlockCounts
+    ) {
+        private CoreRegistration {
+            memberBlockCounts = Map.copyOf(memberBlockCounts);
+        }
+    }
+
     private static final class CloakSystem {
 
-        private final UUID subLevelId;
-        private final Map<Long, CloakingCoreBlockEntity> cores =
-                new LinkedHashMap<>();
+        private final UUID systemId;
+        private final Set<CloakingCoreBlockEntity> cores = new LinkedHashSet<>();
+        private final Map<UUID, Integer> memberBlockCounts = new LinkedHashMap<>();
 
         private CloakingCoreSettings settings;
         private CloakingCoreSettings publishedSettings;
@@ -536,8 +688,43 @@ public final class CloakingManager {
         private float publishedTransitionDurationSeconds = -1.0F;
         private double publishedFullyCloakedDistance = -1.0;
 
-        private CloakSystem(UUID subLevelId) {
-            this.subLevelId = subLevelId;
+        private CloakSystem(UUID systemId) {
+            this.systemId = systemId;
+        }
+    }
+
+    /** Small UUID disjoint-set used only when the once-per-second graph changes. */
+    private static final class UnionFind {
+
+        private final Map<UUID, UUID> parent = new HashMap<>();
+
+        private void add(UUID id) {
+            parent.putIfAbsent(id, id);
+        }
+
+        private UUID find(UUID id) {
+            add(id);
+            UUID p = parent.get(id);
+            if (!p.equals(id)) {
+                p = find(p);
+                parent.put(id, p);
+            }
+            return p;
+        }
+
+        private void union(UUID a, UUID b) {
+            UUID rootA = find(a);
+            UUID rootB = find(b);
+
+            if (rootA.equals(rootB)) {
+                return;
+            }
+
+            UUID first = rootA.toString().compareTo(rootB.toString()) <= 0
+                    ? rootA
+                    : rootB;
+            UUID second = first.equals(rootA) ? rootB : rootA;
+            parent.put(second, first);
         }
     }
 }

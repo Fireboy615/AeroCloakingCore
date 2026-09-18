@@ -3,7 +3,9 @@ package net.fireboy.aerocloakingcore.block.entity;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 
 import dev.ryanhcode.sable.Sable;
+import dev.ryanhcode.sable.api.block.BlockEntitySubLevelActor;
 import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.simulated_team.simulated.content.blocks.rope.RopeStrandHolderBlockEntity;
 
 import net.fireboy.aerocloakingcore.AeroCloakingCore;
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
@@ -27,6 +29,9 @@ import net.minecraft.world.level.chunk.LevelChunkSection;
 
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayDeque;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -108,6 +113,9 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
     private UUID cloakedSubLevelId = null;
     private int subLevelBlockCount = 0;
 
+    /** Unique sublevels currently inherited by this core and their block counts. */
+    private Map<UUID, Integer> resolvedSubLevelBlockCounts = Map.of();
+
     /** Ship block load currently assigned to this core by CloakingManager. */
     private float assignedBlockLoad = 0.0F;
 
@@ -159,6 +167,11 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
     /** Exact non-air block count observed on this core's Sable sublevel. */
     public int getSubLevelBlockCount() {
         return subLevelBlockCount;
+    }
+
+    /** Snapshot used by CloakingManager to build connected cloak groups. */
+    public Map<UUID, Integer> getResolvedSubLevelBlockCounts() {
+        return resolvedSubLevelBlockCounts;
     }
 
     /**
@@ -443,11 +456,21 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         boolean strengthChanged = Math.abs(
                 normalized.cloakStrength() - this.settings.cloakStrength()
         ) > 0.0001F;
+        boolean topologyChanged =
+                normalized.cloakConnectedSubLevels()
+                        != this.settings.cloakConnectedSubLevels()
+                        || normalized.cloakRopeConnectedSubLevels()
+                        != this.settings.cloakRopeConnectedSubLevels();
 
         this.settings = normalized;
 
         if (strengthChanged) {
             refreshDynamicStress();
+        }
+
+        if (topologyChanged) {
+            // Force a graph rescan on the next server tick.
+            checkTimer = SUBLEVEL_CHECK_INTERVAL_TICKS;
         }
 
         setChanged();
@@ -587,6 +610,30 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         }
     }
 
+    /** Controls which Sable connection dependencies inherit this cloak. */
+    public void setConnectionOptions(
+            boolean cloakConnectedSubLevels,
+            boolean cloakRopeConnectedSubLevels
+    ) {
+        CloakingCoreSettings updated = settings.withConnectionOptions(
+                cloakConnectedSubLevels,
+                cloakRopeConnectedSubLevels
+        );
+
+        if (updated.equals(settings)) {
+            return;
+        }
+
+        settings = updated;
+        checkTimer = SUBLEVEL_CHECK_INTERVAL_TICKS;
+        publishSettingsToSystem();
+        setChanged();
+
+        if (level != null && !level.isClientSide) {
+            sendData();
+        }
+    }
+
     /**
      * Called when Create Redstone Link input changes.
      * Signal 0-15 maps linearly to cloak strength 0.0-1.0.
@@ -704,6 +751,7 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
 
         if (!clientPacket) {
             cloakedSubLevelId = null;
+            resolvedSubLevelBlockCounts = Map.of();
             assignedBlockLoad = 0.0F;
             systemCoreCount = 0;
             systemBlockCount = 0;
@@ -789,29 +837,38 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
 
         cloakedSubLevelId = newSubLevelId;
 
-        int newBlockCount = subLevel != null
-                ? countSubLevelBlocks(subLevel)
+        Map<UUID, Integer> newResolvedSubLevels = subLevel != null
+                ? resolveConnectedSubLevelBlocks(
+                        subLevel,
+                        settings.cloakConnectedSubLevels(),
+                        settings.cloakRopeConnectedSubLevels()
+                )
+                : Map.of();
+
+        int newBlockCount = newSubLevelId != null
+                ? newResolvedSubLevels.getOrDefault(newSubLevelId, 0)
                 : 0;
+
+        boolean graphChanged = !newResolvedSubLevels.equals(
+                resolvedSubLevelBlockCounts
+        );
+        resolvedSubLevelBlockCounts = Map.copyOf(newResolvedSubLevels);
 
         if (newBlockCount != subLevelBlockCount) {
             subLevelBlockCount = newBlockCount;
             setChanged();
             sendData();
-
-            AeroCloakingCore.LOGGER.debug(
-                    "Cloaking Core sub-level {} now contains {} non-air blocks",
-                    cloakedSubLevelId,
-                    subLevelBlockCount
-            );
         }
 
         if (cloakedSubLevelId != null) {
             CloakingManager.updateCore(cloakedSubLevelId, this);
 
-            if (subLevelChanged) {
+            if (subLevelChanged || graphChanged) {
                 AeroCloakingCore.LOGGER.debug(
-                        "Cloaking Core joined cloak system for Sable sub-level {}",
-                        cloakedSubLevelId
+                        "Cloaking Core {} resolves {} connected sublevel(s), {} local blocks",
+                        cloakedSubLevelId,
+                        resolvedSubLevelBlockCounts.size(),
+                        subLevelBlockCount
                 );
             }
         } else if (subLevelChanged) {
@@ -830,6 +887,64 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
                     "Cloaking Core is not currently on a Sable sub-level"
             );
         }
+    }
+
+    /**
+     * Resolves the connected Sable graph from this core's own sublevel.
+     *
+     * Non-rope actors use Sable's generic connection-dependency API, so this
+     * automatically covers swivels, docking connectors, springs and future
+     * compatible actors. Rope actors are filtered independently so they can
+     * be opt-in without hard-coding every other connection type.
+     */
+    private static Map<UUID, Integer> resolveConnectedSubLevelBlocks(
+            SubLevel root,
+            boolean includeConnected,
+            boolean includeRopes
+    ) {
+        Map<UUID, Integer> result = new LinkedHashMap<>();
+        ArrayDeque<SubLevel> frontier = new ArrayDeque<>();
+        frontier.add(root);
+
+        while (!frontier.isEmpty()) {
+            SubLevel current = frontier.removeFirst();
+            UUID currentId = current.getUniqueId();
+
+            if (result.containsKey(currentId)) {
+                continue;
+            }
+
+            result.put(currentId, countSubLevelBlocks(current));
+
+            if (!includeConnected && !includeRopes) {
+                continue;
+            }
+
+            for (BlockEntitySubLevelActor actor
+                    : current.getPlot().getBlockEntityActors()) {
+                boolean ropeConnection = actor instanceof RopeStrandHolderBlockEntity;
+
+                if (ropeConnection ? !includeRopes : !includeConnected) {
+                    continue;
+                }
+
+                Iterable<SubLevel> dependencies =
+                        actor.sable$getConnectionDependencies();
+
+                if (dependencies == null) {
+                    continue;
+                }
+
+                for (SubLevel dependency : dependencies) {
+                    if (dependency != null
+                            && !result.containsKey(dependency.getUniqueId())) {
+                        frontier.addLast(dependency);
+                    }
+                }
+            }
+        }
+
+        return result;
     }
 
     /**
@@ -874,6 +989,7 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
             cloakedSubLevelId = null;
         }
 
+        resolvedSubLevelBlockCounts = Map.of();
         assignedBlockLoad = 0.0F;
         systemCoreCount = 0;
         systemBlockCount = 0;

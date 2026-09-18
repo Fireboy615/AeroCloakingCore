@@ -24,7 +24,7 @@ public final class NetworkHandler {
 
     @SubscribeEvent
     public static void register(RegisterPayloadHandlersEvent event) {
-        var registrar = event.registrar("6");
+        var registrar = event.registrar("7");
 
         registrar.playToClient(
                 CloakingSyncPayload.TYPE,
@@ -122,7 +122,9 @@ public final class NetworkHandler {
                             player,
                             payload.updateStrength(),
                             payload.cloakStrength(),
-                            payload.renderMode()
+                            payload.renderMode(),
+                            payload.cloakConnectedSubLevels(),
+                            payload.cloakRopeConnectedSubLevels()
                     );
                 }
         );
