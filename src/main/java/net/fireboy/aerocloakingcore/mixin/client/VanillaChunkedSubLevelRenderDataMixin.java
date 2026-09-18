@@ -6,6 +6,7 @@ import com.mojang.blaze3d.systems.RenderSystem;
 
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 
+import net.fireboy.aerocloakingcore.client.AlphaSubLevelRenderQueue;
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
@@ -131,10 +132,22 @@ public abstract class VanillaChunkedSubLevelRenderDataMixin {
 
         if (renderMode == CloakRenderMode.DITHER) {
 
+            /*
+             * Normal colour rendering uses the configured cloak strength.
+             * During the late occlusion-only replay, however, write the FULL
+             * solid/cutout shell to depth.  The visible colour pass is still
+             * dithered; this only stops interior direct effects (especially the
+             * burner flame) from showing through those temporary pixel holes.
+             */
+            float ditherStrength =
+                    AlphaSubLevelRenderQueue.isDitherOcclusionDepthPass()
+                            ? 0.0F
+                            : cloakStrength;
+
             if (aerocloakingcore$cloakUniformLocation >= 0) {
                 GL20C.glUniform1f(
                         aerocloakingcore$cloakUniformLocation,
-                        cloakStrength
+                        ditherStrength
                 );
             }
 

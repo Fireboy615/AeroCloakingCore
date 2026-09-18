@@ -10,9 +10,11 @@ import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 
+import net.fireboy.aerocloakingcore.client.AlphaSubLevelRenderQueue;
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 
 import org.lwjgl.opengl.GL11C;
@@ -61,6 +63,68 @@ public abstract class HotAirBurnerRendererCloakMixin {
     @Unique
     private int aerocloakingcore$burnerDitherUniform = -1;
 
+    @Unique
+    private boolean aerocloakingcore$burnerChangedDepthFunc;
+
+    @Unique
+    private int aerocloakingcore$burnerPreviousDepthFunc = GL11C.GL_LEQUAL;
+
+    /**
+     * Make the DITHER hull depth available immediately before Aeronautics
+     * binds the burner flame shader.  Doing this here is important: the depth
+     * replay temporarily binds Minecraft terrain shaders, while the next
+     * original instruction re-binds burner_flame and uploads its uniforms.
+     * The direct flame draw therefore sees the completed dithered hull depth
+     * without us disturbing the Veil shader that actually renders the flame.
+     */
+    @Inject(
+            method = "renderSafe",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lfoundry/veil/api/client/render/VeilRenderSystem;setShader(Lnet/minecraft/resources/ResourceLocation;)Lfoundry/veil/api/client/render/shader/program/ShaderProgram;",
+                    shift = At.Shift.BEFORE
+            ),
+            remap = false
+    )
+    private void aerocloakingcore$prepareDitherDepthBeforeBurnerShader(
+            HotAirBurnerBlockEntity blockEntity,
+            float partialTicks,
+            PoseStack poseStack,
+            MultiBufferSource bufferSource,
+            int packedLight,
+            int packedOverlay,
+            CallbackInfo ci
+    ) {
+        SubLevel containing = Sable.HELPER.getContaining(blockEntity);
+
+        if (!(containing instanceof ClientSubLevel clientSubLevel)) {
+            return;
+        }
+
+        if (CloakingClient.getRenderMode(clientSubLevel)
+                != CloakRenderMode.DITHER) {
+            return;
+        }
+
+        float cloakStrength = clamp(
+                CloakingClient.getViewerCloakStrength(clientSubLevel)
+        );
+
+        if (cloakStrength <= 0.0001F
+                || cloakStrength >= 0.9999F
+                || CloakingClient.shouldHideSubLevel(clientSubLevel)) {
+            return;
+        }
+
+        /*
+         * This is deliberately called at the flame site rather than relying
+         * on the end-of-world replay ordering.  Whichever late-render mixin
+         * runs first, the hull's surviving dither pixels are guaranteed to be
+         * in the main depth buffer before renderFlame() enables depth testing.
+         */
+        AlphaSubLevelRenderQueue.renderDitherDepthPrepassFor(clientSubLevel);
+    }
+
     @Inject(
             method = "renderSafe",
             at = @At(
@@ -80,6 +144,7 @@ public abstract class HotAirBurnerRendererCloakMixin {
             CallbackInfo ci
     ) {
         aerocloakingcore$burnerChangedBlend = false;
+        aerocloakingcore$burnerChangedDepthFunc = false;
 
         float ditherStrength = 0.0F;
         float alphaMultiplier = 1.0F;
@@ -100,6 +165,25 @@ public abstract class HotAirBurnerRendererCloakMixin {
 
             if (CloakingClient.shouldHideSubLevel(clientSubLevel)) {
                 alphaMultiplier = 0.0F;
+            }
+        }
+
+        if (ditherStrength > 0.0001F) {
+            /*
+             * The DITHER burner is replayed late. Force the flame back onto
+             * Minecraft's main target and use the ordinary world depth test.
+             * Aeronautics only enables depth testing inside renderFlame(); it
+             * does not restore GL_DEPTH_FUNC itself, so inheriting a late-pass
+             * depth function can make the billboard appear through the hull.
+             */
+            Minecraft.getInstance().getMainRenderTarget().bindWrite(false);
+
+            aerocloakingcore$burnerPreviousDepthFunc =
+                    GL11C.glGetInteger(GL11C.GL_DEPTH_FUNC);
+
+            if (aerocloakingcore$burnerPreviousDepthFunc != GL11C.GL_LEQUAL) {
+                GL11C.glDepthFunc(GL11C.GL_LEQUAL);
+                aerocloakingcore$burnerChangedDepthFunc = true;
             }
         }
 
@@ -197,6 +281,11 @@ public abstract class HotAirBurnerRendererCloakMixin {
         }
         aerocloakingcore$burnerDitherProgram = 0;
         aerocloakingcore$burnerDitherUniform = -1;
+
+        if (aerocloakingcore$burnerChangedDepthFunc) {
+            GL11C.glDepthFunc(aerocloakingcore$burnerPreviousDepthFunc);
+            aerocloakingcore$burnerChangedDepthFunc = false;
+        }
 
         if (!aerocloakingcore$burnerChangedBlend) {
             return;

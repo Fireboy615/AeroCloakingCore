@@ -5,6 +5,7 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.VertexBuffer;
 import com.mojang.blaze3d.vertex.VertexFormat;
 
+import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.VanillaSubLevelRenderDispatcher;
 import dev.ryanhcode.sable.sublevel.render.vanilla.VanillaChunkedSubLevelRenderData;
 
@@ -81,11 +82,25 @@ public final class AlphaSubLevelRenderQueue {
 
     private static boolean ditherDepthPrepassRendered;
 
+    /**
+     * True only while replaying DITHER terrain as an occlusion mask for late
+     * direct effects such as the burner flame.  The colour hull stays dithered,
+     * but this depth pass deliberately writes the complete solid/cutout shell
+     * so interior effects cannot leak through dither holes.
+     */
+    private static boolean ditherOcclusionDepthPass;
+
     private AlphaSubLevelRenderQueue() {
     }
 
     public static void beginFrame() {
-        clear();
+        QUEUE.clear();
+        QUEUED_LAYERS.clear();
+        DITHER_DEPTH_QUEUE.clear();
+        DITHER_DEPTH_QUEUED_LAYERS.clear();
+        surfaceDepthPrepassRendered = false;
+        ditherDepthPrepassRendered = false;
+        ditherOcclusionDepthPass = false;
     }
 
     public static void enqueue(
@@ -202,13 +217,16 @@ public final class AlphaSubLevelRenderQueue {
         return QUEUE.isEmpty() && DITHER_DEPTH_QUEUE.isEmpty();
     }
 
+    public static boolean isDitherOcclusionDepthPass() {
+        return ditherOcclusionDepthPass;
+    }
+
     /**
      * Replays DITHER solid/cutout terrain into the main depth buffer only.
-     * The normal dither shader remains active during this replay, so the depth
-     * mask is pixel-for-pixel identical to the visible dithered hull. A late
-     * direct effect using the same screen-space mask (notably the burner
-     * flame) is then rejected wherever the hull exists and discarded in the
-     * hull's holes.
+     * Cloak dithering is intentionally disabled for this depth replay: the
+     * visible hull remains dithered, while late interior effects see the full
+     * physical shell as an occluder. This prevents a direct effect such as the
+     * burner flame from leaking through dither holes in the ship's blocks.
      */
     public static void renderDitherDepthPrepass() {
         if (ditherDepthPrepassRendered || DITHER_DEPTH_QUEUE.isEmpty()) {
@@ -226,6 +244,7 @@ public final class AlphaSubLevelRenderQueue {
         Matrix4f lateTextureMatrix =
                 new Matrix4f(RenderSystem.getTextureMatrix());
 
+        ditherOcclusionDepthPass = true;
         try {
             for (DeferredSubLevelAlphaRender deferred : DITHER_DEPTH_QUEUE) {
                 var subLevel = deferred.renderData().getSubLevel();
@@ -246,6 +265,72 @@ public final class AlphaSubLevelRenderQueue {
                 renderLayer(deferred, false, true);
             }
         } finally {
+            ditherOcclusionDepthPass = false;
+            restoreLateGlobals(
+                    lateShaderColor,
+                    lateShaderGlintAlpha,
+                    lateFogStart,
+                    lateFogEnd,
+                    lateFogColor,
+                    lateFogShape,
+                    lateTextureMatrix
+            );
+        }
+    }
+
+    /**
+     * Replays only the requested DITHER sublevel's opaque/cutout shell into
+     * the main depth buffer. Unlike {@link #renderDitherDepthPrepass()}, this
+     * intentionally ignores the once-per-frame guard so a direct renderer can
+     * guarantee that its owner's depth is present immediately before drawing.
+     *
+     * <p>The burner flame needs this because it bypasses MultiBufferSource and
+     * draws directly. Calling this immediately before Aeronautics binds the
+     * burner shader gives the flame a complete solid/cutout hull depth mask,
+     * regardless of late-render mixin ordering.</p>
+     */
+    public static void renderDitherDepthPrepassFor(
+            ClientSubLevel targetSubLevel
+    ) {
+        if (targetSubLevel == null || DITHER_DEPTH_QUEUE.isEmpty()) {
+            return;
+        }
+
+        if (CloakingClient.getRenderMode(targetSubLevel)
+                != CloakRenderMode.DITHER
+                || CloakingClient.shouldHideSubLevel(targetSubLevel)) {
+            return;
+        }
+
+        float targetStrength =
+                CloakingClient.getViewerCloakStrength(targetSubLevel);
+
+        if (targetStrength <= 0.0001F || targetStrength >= 0.9999F) {
+            return;
+        }
+
+        float[] lateShaderColor = RenderSystem.getShaderColor().clone();
+        float lateShaderGlintAlpha = RenderSystem.getShaderGlintAlpha();
+        float lateFogStart = RenderSystem.getShaderFogStart();
+        float lateFogEnd = RenderSystem.getShaderFogEnd();
+        float[] lateFogColor = RenderSystem.getShaderFogColor().clone();
+        FogShape lateFogShape = RenderSystem.getShaderFogShape();
+        Matrix4f lateTextureMatrix =
+                new Matrix4f(RenderSystem.getTextureMatrix());
+
+        ditherOcclusionDepthPass = true;
+        try {
+            for (DeferredSubLevelAlphaRender deferred : DITHER_DEPTH_QUEUE) {
+                if (deferred.renderData().getSubLevel() != targetSubLevel
+                        || !isDepthOccludingLayer(deferred.renderType())) {
+                    continue;
+                }
+
+                restoreCapturedGlobals(deferred);
+                renderLayer(deferred, false, true);
+            }
+        } finally {
+            ditherOcclusionDepthPass = false;
             restoreLateGlobals(
                     lateShaderColor,
                     lateShaderGlintAlpha,
@@ -385,10 +470,16 @@ public final class AlphaSubLevelRenderQueue {
     public static void clear() {
         QUEUE.clear();
         QUEUED_LAYERS.clear();
-        DITHER_DEPTH_QUEUE.clear();
-        DITHER_DEPTH_QUEUED_LAYERS.clear();
         surfaceDepthPrepassRendered = false;
-        ditherDepthPrepassRendered = false;
+
+        /*
+         * Keep DITHER depth captures alive until the next renderLevel HEAD.
+         * The late ALPHA sublevel callback can run before the late block-entity
+         * callback at the same renderDebug injection point. A burner rendered
+         * by that later callback still needs its owning hull data for the
+         * just-in-time depth replay. beginFrame() clears these captures before
+         * any data from the next frame can be queued.
+         */
     }
 
     private static void restoreLateGlobals(
