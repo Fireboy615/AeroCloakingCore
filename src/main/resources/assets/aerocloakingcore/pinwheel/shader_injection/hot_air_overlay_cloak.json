@@ -1,0 +1,4 @@
+{
+  "target": "aeronautics:hot_air_overlay.fsh",
+  "redirect": "aerocloakingcore:hot_air_overlay_cloak.glsl"
+}

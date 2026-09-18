@@ -24,6 +24,10 @@
     "client.RenderTypeEntityCloakMixin",
     "client.VertexBufferEntityDitherMixin",
     "client.RopeStrandRendererCloakMixin",
-    "client.LevelRendererRopeCloakMixin"
+    "client.LevelRendererRopeCloakMixin",
+    "client.ClientBalloonEffectRendererAccessor",
+    "client.HeatedCulledRenderRegionCloakMixin",
+    "client.HotAirBurnerRendererCloakMixin",
+    "client.LevelRendererHotAirBalloonCloakMixin"
   ]
 }

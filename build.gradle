@@ -209,21 +209,22 @@ dependencies {
     implementation("dev.ryanhcode.sable-companion:sable-companion-common-${minecraft_version}:1.6.0")
 }
 
-// Aeronautics bundles Simulated as META-INF/jarjar/*.jar. Java's compiler does not
-// look inside nested jars, so expose that embedded jar as an ordinary compile-classpath
-// entry. This does NOT add another Simulated mod at runtime.
+// The public Aeronautics download is a JarJar bundle. Java's compiler does not
+// look inside META-INF/jarjar/*.jar, even though NeoForge loads those nested jars
+// at runtime. Expose the bundled module jars to javac only. This covers both
+// Simulated APIs (rope support) and Aeronautics internal/client APIs (balloon
+// heatwave support) without installing duplicate mods at runtime.
 def aeronauticsBundleCompileDir = layout.buildDirectory.dir("generated/aeronauticsBundleForCompile")
 
-// Resolve the Aeronautics archive while configuring the copy spec. This deliberately
-// avoids calling Project.zipTree()/Project.fileTree() from an execution-time closure,
-// which Gradle 9's configuration cache rejects.
+// Resolve the archive while configuring the copy spec. Keeping zipTree/fileTree
+// access out of execution-time closures makes this Gradle 9 configuration-cache safe.
 def aeronauticsBundleTreesForCompile = configurations.aeronauticsBundleForCompile.files.collect { bundleJar ->
     zipTree(bundleJar)
 }
 
-def extractEmbeddedSimulatedForCompile = tasks.register("extractEmbeddedSimulatedForCompile", Sync) {
+def extractEmbeddedAeronauticsModulesForCompile = tasks.register("extractEmbeddedAeronauticsModulesForCompile", Sync) {
     from(aeronauticsBundleTreesForCompile)
-    include("META-INF/jarjar/*simulated*.jar")
+    include("META-INF/jarjar/*.jar")
     includeEmptyDirs = false
     into(aeronauticsBundleCompileDir)
 
@@ -231,30 +232,29 @@ def extractEmbeddedSimulatedForCompile = tasks.register("extractEmbeddedSimulate
         File jarJarDir = new File(task.destinationDir, "META-INF/jarjar")
         List<File> matches = jarJarDir.isDirectory()
                 ? jarJarDir.listFiles().findAll { File file ->
-                    file.isFile() &&
-                            file.name.toLowerCase(Locale.ROOT).contains("simulated") &&
-                            file.name.toLowerCase(Locale.ROOT).endsWith(".jar")
-                }
+                    file.isFile() && file.name.toLowerCase(Locale.ROOT).endsWith(".jar")
+                }.sort { it.name }
                 : []
 
-        if (matches.size() != 1) {
+        if (matches.isEmpty()) {
             throw new GradleException(
-                    "Expected exactly one embedded Simulated jar in the Aeronautics bundle, but found ${matches.size()}: ${matches}"
+                    "Expected embedded module jars in the Aeronautics bundle, but none were found in ${jarJarDir}"
             )
         }
 
-        task.logger.lifecycle("Using embedded Simulated compile jar: ${matches.first().name}")
+        task.logger.lifecycle("Using embedded Aeronautics compile modules:")
+        matches.each { File file -> task.logger.lifecycle("  - ${file.name}") }
     }
 }
 
-def embeddedSimulatedCompileJars = fileTree(aeronauticsBundleCompileDir) {
-    include("META-INF/jarjar/*simulated*.jar")
+def embeddedAeronauticsCompileJars = fileTree(aeronauticsBundleCompileDir) {
+    include("META-INF/jarjar/*.jar")
 }
 
-sourceSets.main.compileClasspath += embeddedSimulatedCompileJars
+sourceSets.main.compileClasspath += embeddedAeronauticsCompileJars
 
 tasks.named("compileJava").configure {
-    dependsOn(extractEmbeddedSimulatedForCompile)
+    dependsOn(extractEmbeddedAeronauticsModulesForCompile)
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.

@@ -4,6 +4,8 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.PoseStack;
 
+import dev.eriksonn.aeronautics.content.blocks.hot_air.hot_air_burner.HotAirBurnerBlockEntity;
+
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
@@ -18,11 +20,12 @@ import java.util.List;
 /**
  * Isolated render path for partially cloaked block entities.
  *
- * DITHER block entities are rendered immediately, but into a private
+ * DITHER block entities are normally rendered immediately into a private
  * MultiBufferSource so their flush cannot disturb Minecraft/Sable's shared
- * world buffers. ALPHA block entities are queued and replayed at the end of
- * the world pass, after water/clouds/translucent terrain, matching the timing
- * already used by the alpha sublevel renderer.
+ * world buffers. Aeronautics' burner is the exception because its flame draws
+ * directly and needs the terrain depth buffer to be complete first, so that
+ * one BER is replayed in the late queue. ALPHA block entities are also queued
+ * and replayed at the end of the world pass.
  */
 public final class BlockEntityCloakRenderQueue {
 
@@ -53,6 +56,36 @@ public final class BlockEntityCloakRenderQueue {
             int packedOverlay,
             float cloakStrength
     ) {
+        /*
+         * Aeronautics' burner flame bypasses MultiBufferSource and calls
+         * BufferUploader.drawWithShader() directly from inside its BER.  At
+         * the normal block-entity point, nearby/sublevel terrain can still be
+         * sitting in Minecraft's shared buffers and therefore has not written
+         * its depth yet.  The direct flame then appears through the dithered
+         * hull even though its own dither mask is correct.
+         *
+         * ALPHA already avoids this because alpha BERs are replayed late. Do
+         * the same only for the burner in DITHER mode. By the late pass the
+         * world/sublevel geometry has populated the main depth buffer, so the
+         * flame is depth-culled correctly without force-flushing shared world
+         * buffers or disturbing every other dithered block entity.
+         */
+        if (blockEntity instanceof HotAirBurnerBlockEntity) {
+            QUEUE.add(
+                    new DeferredRender(
+                            castRenderer(renderer),
+                            blockEntity,
+                            partialTick,
+                            copyPoseStack(poseStack),
+                            packedLight,
+                            packedOverlay,
+                            cloakStrength,
+                            CloakRenderMode.DITHER
+                    )
+            );
+            return;
+        }
+
         renderIsolated(
                 renderer,
                 blockEntity,

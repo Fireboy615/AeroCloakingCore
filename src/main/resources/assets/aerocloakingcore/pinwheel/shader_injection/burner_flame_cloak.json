@@ -1,0 +1,4 @@
+{
+  "target": "aeronautics:burner_flame.fsh",
+  "redirect": "aerocloakingcore:burner_flame_cloak.glsl"
+}
