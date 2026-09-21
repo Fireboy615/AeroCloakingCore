@@ -15,7 +15,7 @@ import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
-import org.spongepowered.asm.mixin.injection.Redirect;
+import com.llamalad7.mixinextras.injector.v2.WrapWithCondition;
 
 import java.util.Iterator;
 
@@ -83,14 +83,24 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
      * solid/cutout/translucent shader and Sable lighting state at the late
      * replay point.
      */
-    @Redirect(
+    /**
+     * Intercepts Sable's terrain draw without taking ownership of the invocation.
+     *
+     * Using WrapWithCondition instead of Redirect is important for compatibility:
+     * other mods such as Vestalihy redirect this same renderChunkedSubLevel call.
+     *
+     * Returning true allows Sable/the downstream redirect to perform the draw.
+     * Returning false suppresses the early draw after ALPHA has been queued for
+     * the late world pass.
+     */
+    @WrapWithCondition(
             method = "renderSectionLayer",
             at = @At(
                     value = "INVOKE",
                     target = "Ldev/ryanhcode/sable/sublevel/render/vanilla/VanillaChunkedSubLevelRenderData;renderChunkedSubLevel(Lnet/minecraft/client/renderer/RenderType;Lnet/minecraft/client/renderer/ShaderInstance;Lorg/joml/Matrix4f;DDD)V"
             )
     )
-    private void aerocloakingcore$deferAlphaRenderToEndOfWorldPass(
+    private boolean aerocloakingcore$deferAlphaRenderToEndOfWorldPass(
             VanillaChunkedSubLevelRenderData renderData,
             RenderType renderType,
             ShaderInstance shader,
@@ -101,29 +111,29 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
     ) {
 
         ClientSubLevel subLevel = renderData.getSubLevel();
+
         float cloakStrength =
                 CloakingClient.getViewerCloakStrength(subLevel);
+
         CloakRenderMode renderMode =
                 CloakingClient.getRenderMode(subLevel);
 
+        /*
+         * No active cloak.
+         *
+         * Allow the original invocation to continue. If another mod such as
+         * Vestalihy redirects it, that redirect can still handle the draw.
+         */
         if (cloakStrength <= 0.0001F) {
-            renderData.renderChunkedSubLevel(
-                    renderType,
-                    shader,
-                    modelView,
-                    cameraX,
-                    cameraY,
-                    cameraZ
-            );
-            return;
+            return true;
         }
 
         if (renderMode == CloakRenderMode.DITHER) {
             /*
-             * Keep the normal DITHER colour draw exactly where Sable put it,
-             * but also remember its opaque/cutout layers for a late depth-only
-             * replay. Aeronautics' burner flame is a direct draw and needs
-             * that main-target depth to match the visible dithered hull.
+             * DITHER still renders normally at Sable's original point.
+             *
+             * We only capture the opaque/cutout layers so they can be replayed
+             * later as the depth mask used by late direct effects.
              */
             AlphaSubLevelRenderQueue.enqueueDitherDepth(
                     renderData,
@@ -134,22 +144,15 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
                     cameraZ
             );
 
-            renderData.renderChunkedSubLevel(
-                    renderType,
-                    shader,
-                    modelView,
-                    cameraX,
-                    cameraY,
-                    cameraZ
-            );
-            return;
+            return true;
         }
 
         if (renderMode.isAlpha()) {
             /*
-             * Capture every layer while Minecraft/Sable still have that
-             * layer's proper shader, fog, lightmap, colour and matrices
-             * configured.
+             * ALPHA must not draw during Sable's early terrain pass.
+             *
+             * Capture the render state here, then suppress this invocation.
+             * AlphaSubLevelRenderQueue will replay it during the late pass.
              */
             AlphaSubLevelRenderQueue.enqueue(
                     renderData,
@@ -159,17 +162,11 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
                     cameraY,
                     cameraZ
             );
-            return;
+
+            return false;
         }
 
-        renderData.renderChunkedSubLevel(
-                renderType,
-                shader,
-                modelView,
-                cameraX,
-                cameraY,
-                cameraZ
-        );
+        return true;
     }
 
     private static Iterable<ClientSubLevel> filter(
