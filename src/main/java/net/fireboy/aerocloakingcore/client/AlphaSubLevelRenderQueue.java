@@ -57,6 +57,16 @@ public final class AlphaSubLevelRenderQueue {
             new ArrayList<>();
 
     /**
+     * One base capture per cloaked sublevel used to build a temporary full
+     * terrain depth mask while normal entities render in OCCLUDED_ONLY mode.
+     */
+    private static final List<DeferredSubLevelAlphaRender> ENTITY_OCCLUSION_QUEUE =
+            new ArrayList<>();
+
+    private static final Set<VanillaChunkedSubLevelRenderData> ENTITY_OCCLUSION_QUEUED =
+            Collections.newSetFromMap(new IdentityHashMap<>());
+
+    /**
      * Prevent accidental duplicate capture of the same render-data/layer pair
      * during one frame while still allowing every distinct terrain layer.
      */
@@ -89,6 +99,7 @@ public final class AlphaSubLevelRenderQueue {
      * so interior effects cannot leak through dither holes.
      */
     private static boolean ditherOcclusionDepthPass;
+    private static boolean entityOcclusionDepthPass;
 
     private AlphaSubLevelRenderQueue() {
     }
@@ -98,9 +109,12 @@ public final class AlphaSubLevelRenderQueue {
         QUEUED_LAYERS.clear();
         DITHER_DEPTH_QUEUE.clear();
         DITHER_DEPTH_QUEUED_LAYERS.clear();
+        ENTITY_OCCLUSION_QUEUE.clear();
+        ENTITY_OCCLUSION_QUEUED.clear();
         surfaceDepthPrepassRendered = false;
         ditherDepthPrepassRendered = false;
         ditherOcclusionDepthPass = false;
+        entityOcclusionDepthPass = false;
     }
 
     public static void enqueue(
@@ -210,6 +224,122 @@ public final class AlphaSubLevelRenderQueue {
                         fogColor[3],
                         RenderSystem.getShaderFogShape()
                 )
+        );
+    }
+
+    public static void enqueueEntityOcclusion(
+            VanillaChunkedSubLevelRenderData renderData,
+            RenderType renderType,
+            Matrix4f modelView,
+            double cameraX,
+            double cameraY,
+            double cameraZ
+    ) {
+        if (!CloakingClient.shouldWriteEntityOcclusionDepth(renderData.getSubLevel())
+                || !ENTITY_OCCLUSION_QUEUED.add(renderData)) {
+            return;
+        }
+
+        float[] shaderColor = RenderSystem.getShaderColor();
+        float[] fogColor = RenderSystem.getShaderFogColor();
+
+        ENTITY_OCCLUSION_QUEUE.add(
+                new DeferredSubLevelAlphaRender(
+                        renderData,
+                        renderType,
+                        new Matrix4f(modelView),
+                        new Matrix4f(RenderSystem.getProjectionMatrix()),
+                        new Matrix4f(RenderSystem.getTextureMatrix()),
+                        cameraX,
+                        cameraY,
+                        cameraZ,
+                        shaderColor[0], shaderColor[1], shaderColor[2], shaderColor[3],
+                        RenderSystem.getShaderGlintAlpha(),
+                        RenderSystem.getShaderFogStart(),
+                        RenderSystem.getShaderFogEnd(),
+                        fogColor[0], fogColor[1], fogColor[2], fogColor[3],
+                        RenderSystem.getShaderFogShape()
+                )
+        );
+    }
+
+    public static boolean hasEntityOcclusionDepth() {
+        return !ENTITY_OCCLUSION_QUEUE.isEmpty();
+    }
+
+    public static boolean isEntityOcclusionDepthPass() {
+        return entityOcclusionDepthPass;
+    }
+
+    /**
+     * Draws the complete block shell into depth only. This pass is temporary:
+     * EntityOcclusionDepthMask restores the original world depth immediately
+     * after the entity batch has been flushed.
+     */
+    public static void renderEntityOcclusionDepthPrepass() {
+        if (ENTITY_OCCLUSION_QUEUE.isEmpty()) {
+            return;
+        }
+
+        float[] lateShaderColor = RenderSystem.getShaderColor().clone();
+        float lateShaderGlintAlpha = RenderSystem.getShaderGlintAlpha();
+        float lateFogStart = RenderSystem.getShaderFogStart();
+        float lateFogEnd = RenderSystem.getShaderFogEnd();
+        float[] lateFogColor = RenderSystem.getShaderFogColor().clone();
+        FogShape lateFogShape = RenderSystem.getShaderFogShape();
+        Matrix4f lateTextureMatrix = new Matrix4f(RenderSystem.getTextureMatrix());
+
+        entityOcclusionDepthPass = true;
+        ditherOcclusionDepthPass = true;
+        try {
+            RenderType[] layers = {
+                    RenderType.solid(),
+                    RenderType.cutoutMipped(),
+                    RenderType.cutout(),
+                    RenderType.translucent(),
+                    RenderType.tripwire()
+            };
+
+            for (DeferredSubLevelAlphaRender base : ENTITY_OCCLUSION_QUEUE) {
+                if (!CloakingClient.shouldWriteEntityOcclusionDepth(
+                        base.renderData().getSubLevel())) {
+                    continue;
+                }
+
+                for (RenderType layer : layers) {
+                    DeferredSubLevelAlphaRender deferred = withRenderType(base, layer);
+                    restoreCapturedGlobals(deferred);
+                    renderLayer(deferred, false, true);
+                }
+            }
+        } finally {
+            ditherOcclusionDepthPass = false;
+            entityOcclusionDepthPass = false;
+            restoreLateGlobals(
+                    lateShaderColor,
+                    lateShaderGlintAlpha,
+                    lateFogStart,
+                    lateFogEnd,
+                    lateFogColor,
+                    lateFogShape,
+                    lateTextureMatrix
+            );
+        }
+    }
+
+    private static DeferredSubLevelAlphaRender withRenderType(
+            DeferredSubLevelAlphaRender base,
+            RenderType renderType
+    ) {
+        return new DeferredSubLevelAlphaRender(
+                base.renderData(), renderType,
+                base.modelView(), base.projection(), base.textureMatrix(),
+                base.cameraX(), base.cameraY(), base.cameraZ(),
+                base.shaderColorR(), base.shaderColorG(), base.shaderColorB(), base.shaderColorA(),
+                base.shaderGlintAlpha(),
+                base.fogStart(), base.fogEnd(),
+                base.fogColorR(), base.fogColorG(), base.fogColorB(), base.fogColorA(),
+                base.fogShape()
         );
     }
 

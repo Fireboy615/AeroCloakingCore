@@ -125,6 +125,19 @@ public abstract class VanillaChunkedSubLevelRenderDataMixin {
         CloakRenderMode renderMode =
                 CloakingClient.getRenderMode(subLevel);
 
+        /*
+         * Entity occlusion is a pure geometry/depth replay. Do not apply
+         * either dither discard or alpha fading here; transparent texels from
+         * the block's own texture still behave normally through the vanilla
+         * shader, but cloak strength itself cannot punch holes in this mask.
+         */
+        if (AlphaSubLevelRenderQueue.isEntityOcclusionDepthPass()) {
+            if (aerocloakingcore$cloakUniformLocation >= 0) {
+                GL20C.glUniform1f(aerocloakingcore$cloakUniformLocation, 0.0F);
+            }
+            return;
+        }
+
 
         // -------------------------------------------------------------
         // DITHER MODE

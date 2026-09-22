@@ -1,7 +1,9 @@
 package net.fireboy.aerocloakingcore.server.config;
 
 import net.fireboy.aerocloakingcore.client.CloakEasing;
+import net.fireboy.aerocloakingcore.cloak.CloakDistanceMode;
 import net.fireboy.aerocloakingcore.cloak.CloakingServerSettings;
+import net.fireboy.aerocloakingcore.cloak.EntityCloakBehavior;
 import net.fireboy.aerocloakingcore.cloak.RopeCloakBehavior;
 
 import net.neoforged.neoforge.common.ModConfigSpec;
@@ -22,6 +24,8 @@ public final class AeroCloakingCoreServerConfig {
     public static final ModConfigSpec.BooleanValue PROXIMITY_REVEAL_ENABLED;
     public static final ModConfigSpec.DoubleValue FULLY_VISIBLE_DISTANCE;
     public static final ModConfigSpec.DoubleValue REVEAL_DISTANCE_MULTIPLIER;
+    public static final ModConfigSpec.EnumValue<CloakDistanceMode> CLOAK_DISTANCE_MODE;
+    public static final ModConfigSpec.EnumValue<EntityCloakBehavior> ENTITY_CLOAK_BEHAVIOR;
 
     public static final ModConfigSpec.EnumValue<RopeCloakBehavior> ROPE_CLOAK_BEHAVIOR;
 
@@ -81,6 +85,23 @@ public final class AeroCloakingCoreServerConfig {
                         "starts revealing 14 blocks from its bounds and is fully visible at 4 blocks."
                 )
                 .defineInRange("revealDistanceMultiplier", 1.0, 0.0, 10.0);
+
+        CLOAK_DISTANCE_MODE = builder
+                .comment(
+                        "Distance metric used by proximity reveal.",
+                        "BOUNDING_BOX uses the nearest sublevel bounding box only.",
+                        "CLOSEST_FACE uses the nearest real non-air block face."
+                )
+                .defineEnum("cloakDistanceMode", CloakDistanceMode.CLOSEST_FACE);
+
+        ENTITY_CLOAK_BEHAVIOR = builder
+                .comment(
+                        "How entities interact with cloaked sublevels.",
+                        "MATCH_SHIP makes entities inherit the ship cloak (current behaviour).",
+                        "OCCLUDED_ONLY keeps entities visible unless cloaked ship blocks are between the viewer and entity.",
+                        "ALWAYS_VISIBLE never applies cloak visibility to entities."
+                )
+                .defineEnum("entityCloakBehavior", EntityCloakBehavior.MATCH_SHIP);
 
         builder.pop();
 
@@ -155,6 +176,8 @@ public final class AeroCloakingCoreServerConfig {
         PROXIMITY_REVEAL_ENABLED.set(normalized.proximityRevealEnabled());
         FULLY_VISIBLE_DISTANCE.set(fullyVisibleDistance);
         REVEAL_DISTANCE_MULTIPLIER.set(revealMultiplier);
+        CLOAK_DISTANCE_MODE.set(normalized.cloakDistanceMode());
+        ENTITY_CLOAK_BEHAVIOR.set(normalized.entityCloakBehavior());
         ROPE_CLOAK_BEHAVIOR.set(normalized.ropeCloakBehavior());
 
         SPEC.save();

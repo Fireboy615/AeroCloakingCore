@@ -33,7 +33,7 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
     private Iterable<ClientSubLevel> aerocloakingcore$filterSectionRender(
             Iterable<ClientSubLevel> subLevels
     ) {
-        return filter(subLevels);
+        return filter(subLevels, true);
     }
 
     @ModifyVariable(
@@ -45,7 +45,7 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
     private Iterable<ClientSubLevel> aerocloakingcore$filterAfterSections(
             Iterable<ClientSubLevel> subLevels
     ) {
-        return filter(subLevels);
+        return filter(subLevels, false);
     }
 
     @ModifyVariable(
@@ -57,7 +57,7 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
     private Iterable<ClientSubLevel> aerocloakingcore$filterBlockEntities(
             Iterable<ClientSubLevel> subLevels
     ) {
-        return filter(subLevels);
+        return filter(subLevels, false);
     }
 
     @ModifyVariable(
@@ -69,7 +69,7 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
     private Iterable<ClientSubLevel> aerocloakingcore$filterCulling(
             Iterable<ClientSubLevel> subLevels
     ) {
-        return filter(subLevels);
+        return filter(subLevels, true);
     }
 
     /**
@@ -112,6 +112,20 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
 
         ClientSubLevel subLevel = renderData.getSubLevel();
 
+        /*
+         * Capture one transform/state sample for the temporary entity-only
+         * depth mask. This happens even for fully hidden sublevels; the
+         * original colour draw is suppressed below when appropriate.
+         */
+        AlphaSubLevelRenderQueue.enqueueEntityOcclusion(
+                renderData,
+                renderType,
+                modelView,
+                cameraX,
+                cameraY,
+                cameraZ
+        );
+
         float cloakStrength =
                 CloakingClient.getViewerCloakStrength(subLevel);
 
@@ -126,6 +140,11 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
          */
         if (cloakStrength <= 0.0001F) {
             return true;
+        }
+
+        /* Fully cloaked: keep only the temporary entity depth capture. */
+        if (CloakingClient.shouldHideSubLevel(subLevel)) {
+            return false;
         }
 
         if (renderMode == CloakRenderMode.DITHER) {
@@ -170,7 +189,8 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
     }
 
     private static Iterable<ClientSubLevel> filter(
-            Iterable<ClientSubLevel> subLevels
+            Iterable<ClientSubLevel> subLevels,
+            boolean keepForEntityDepth
     ) {
         return () -> new Iterator<>() {
 
@@ -189,9 +209,9 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
                     ClientSubLevel candidate =
                             original.next();
 
-                    if (!CloakingClient.shouldHideSubLevel(
-                            candidate
-                    )) {
+                    if (!CloakingClient.shouldHideSubLevel(candidate)
+                            || (keepForEntityDepth
+                            && CloakingClient.shouldWriteEntityOcclusionDepth(candidate))) {
                         next = candidate;
                         prepared = true;
                         return;

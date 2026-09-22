@@ -1,7 +1,9 @@
 package net.fireboy.aerocloakingcore.client.screen;
 
 import net.fireboy.aerocloakingcore.client.CloakEasing;
+import net.fireboy.aerocloakingcore.cloak.CloakDistanceMode;
 import net.fireboy.aerocloakingcore.cloak.CloakingServerSettings;
+import net.fireboy.aerocloakingcore.cloak.EntityCloakBehavior;
 import net.fireboy.aerocloakingcore.cloak.RopeCloakBehavior;
 import net.fireboy.aerocloakingcore.network.RequestServerConfigPayload;
 import net.fireboy.aerocloakingcore.network.ServerConfigClientState;
@@ -49,17 +51,24 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private static final int LEAVE_FADE =
             LEAVE_GRACE + ROW_HEIGHT;
 
-    private static final int PROXIMITY_HEADER =
+    private static final int ENTITY_HEADER =
             LEAVE_FADE + ROW_HEIGHT + SECTION_GAP;
+    private static final int ENTITY_CLOAK_BEHAVIOR =
+            ENTITY_HEADER + SECTION_HEADER_HEIGHT;
+
+    private static final int PROXIMITY_HEADER =
+            ENTITY_CLOAK_BEHAVIOR + ROW_HEIGHT + SECTION_GAP;
     private static final int PROXIMITY_REVEAL =
             PROXIMITY_HEADER + SECTION_HEADER_HEIGHT;
     private static final int FULLY_VISIBLE_DISTANCE =
             PROXIMITY_REVEAL + ROW_HEIGHT;
     private static final int REVEAL_MULTIPLIER =
             FULLY_VISIBLE_DISTANCE + ROW_HEIGHT;
+    private static final int CLOAK_DISTANCE_MODE =
+            REVEAL_MULTIPLIER + ROW_HEIGHT;
 
     private static final int ROPE_HEADER =
-            REVEAL_MULTIPLIER + ROW_HEIGHT + SECTION_GAP;
+            CLOAK_DISTANCE_MODE + ROW_HEIGHT + SECTION_GAP;
     private static final int ROPE_BEHAVIOR =
             ROPE_HEADER + SECTION_HEADER_HEIGHT;
 
@@ -82,6 +91,8 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private Button easingButton;
     private Button visibleWhileAboardButton;
     private Button proximityRevealButton;
+    private Button entityCloakBehaviorButton;
+    private Button cloakDistanceModeButton;
     private Button ropeBehaviorButton;
 
     private Button cancelButton;
@@ -91,6 +102,8 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private CloakEasing transitionEasing = CloakEasing.SMOOTHSTEP;
     private boolean visibleWhileAboard = true;
     private boolean proximityRevealEnabled = true;
+    private EntityCloakBehavior entityCloakBehavior = EntityCloakBehavior.MATCH_SHIP;
+    private CloakDistanceMode cloakDistanceMode = CloakDistanceMode.CLOSEST_FACE;
     private RopeCloakBehavior ropeCloakBehavior = RopeCloakBehavior.GRADIENT;
 
     private boolean valuesLoaded;
@@ -186,6 +199,15 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                 "screen.aerocloakingcore.server_config.leave_fade"
         );
 
+        entityCloakBehaviorButton = addRenderableWidget(
+                Button.builder(
+                                entityCloakBehaviorMessage(),
+                                button -> cycleEntityCloakBehavior()
+                        )
+                        .bounds(controlX, 0, controlWidth, 20)
+                        .build()
+        );
+
         proximityRevealButton = addRenderableWidget(
                 Button.builder(
                                 toggleMessage(proximityRevealEnabled),
@@ -211,6 +233,13 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                 controlWidth,
                 "screen.aerocloakingcore.server_config.reveal_distance_multiplier"
         );
+
+        cloakDistanceModeButton = addRenderableWidget(
+                Button.builder(cloakDistanceModeMessage(), button -> cycleCloakDistanceMode())
+                        .bounds(controlX, 0, controlWidth, 20)
+                        .build()
+        );
+
         ropeBehaviorButton = addRenderableWidget(
                 Button.builder(ropeBehaviorMessage(), button -> cycleRopeBehavior())
                         .bounds(controlX, 0, controlWidth, 20)
@@ -437,6 +466,8 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                     proximityRevealEnabled,
                     parseDouble(fullyVisibleDistance),
                     parseDouble(revealDistanceMultiplier),
+                    cloakDistanceMode,
+                    entityCloakBehavior,
                     ropeCloakBehavior
             ).normalized();
 
@@ -490,6 +521,8 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         }
 
         proximityRevealEnabled = normalized.proximityRevealEnabled();
+        entityCloakBehavior = normalized.entityCloakBehavior();
+        cloakDistanceMode = normalized.cloakDistanceMode();
         ropeCloakBehavior = normalized.ropeCloakBehavior();
 
         if (fullyVisibleDistance != null) {
@@ -537,6 +570,38 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         );
     }
 
+    private void cycleEntityCloakBehavior() {
+        EntityCloakBehavior[] values = EntityCloakBehavior.values();
+        int next = (entityCloakBehavior.ordinal() + 1) % values.length;
+        entityCloakBehavior = values[next];
+        if (entityCloakBehaviorButton != null) {
+            entityCloakBehaviorButton.setMessage(entityCloakBehaviorMessage());
+        }
+    }
+
+    private Component entityCloakBehaviorMessage() {
+        return Component.translatable(
+                "screen.aerocloakingcore.server_config.entity_cloak_behavior."
+                        + entityCloakBehavior.name().toLowerCase(Locale.ROOT)
+        );
+    }
+
+    private void cycleCloakDistanceMode() {
+        CloakDistanceMode[] values = CloakDistanceMode.values();
+        int next = (cloakDistanceMode.ordinal() + 1) % values.length;
+        cloakDistanceMode = values[next];
+        if (cloakDistanceModeButton != null) {
+            cloakDistanceModeButton.setMessage(cloakDistanceModeMessage());
+        }
+    }
+
+    private Component cloakDistanceModeMessage() {
+        return Component.translatable(
+                "screen.aerocloakingcore.server_config.cloak_distance_mode."
+                        + cloakDistanceMode.name().toLowerCase(Locale.ROOT)
+        );
+    }
+
     private static Component toggleMessage(boolean enabled) {
         return Component.literal(enabled ? "ON" : "OFF");
     }
@@ -552,6 +617,14 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
 
         if (proximityRevealButton != null) {
             proximityRevealButton.setMessage(toggleMessage(proximityRevealEnabled));
+        }
+
+        if (entityCloakBehaviorButton != null) {
+            entityCloakBehaviorButton.setMessage(entityCloakBehaviorMessage());
+        }
+
+        if (cloakDistanceModeButton != null) {
+            cloakDistanceModeButton.setMessage(cloakDistanceModeMessage());
         }
 
         if (ropeBehaviorButton != null) {
@@ -579,6 +652,14 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
 
         if (proximityRevealButton != null) {
             proximityRevealButton.active = editable;
+        }
+
+        if (entityCloakBehaviorButton != null) {
+            entityCloakBehaviorButton.active = editable;
+        }
+
+        if (cloakDistanceModeButton != null) {
+            cloakDistanceModeButton.active = editable;
         }
 
         if (ropeBehaviorButton != null) {
@@ -629,9 +710,11 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         positionWidget(aboardFade, ABOARD_FADE);
         positionWidget(leaveGrace, LEAVE_GRACE);
         positionWidget(leaveFade, LEAVE_FADE);
+        positionWidget(entityCloakBehaviorButton, ENTITY_CLOAK_BEHAVIOR);
         positionWidget(proximityRevealButton, PROXIMITY_REVEAL);
         positionWidget(fullyVisibleDistance, FULLY_VISIBLE_DISTANCE);
         positionWidget(revealDistanceMultiplier, REVEAL_MULTIPLIER);
+        positionWidget(cloakDistanceModeButton, CLOAK_DISTANCE_MODE);
         positionWidget(ropeBehaviorButton, ROPE_BEHAVIOR);
     }
 
@@ -796,6 +879,17 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
 
         drawSectionHeader(
                 guiGraphics,
+                ENTITY_HEADER,
+                "screen.aerocloakingcore.server_config.section.entities"
+        );
+        drawRowLabel(
+                guiGraphics,
+                ENTITY_CLOAK_BEHAVIOR,
+                "screen.aerocloakingcore.server_config.entity_cloak_behavior"
+        );
+
+        drawSectionHeader(
+                guiGraphics,
                 PROXIMITY_HEADER,
                 "screen.aerocloakingcore.server_config.section.proximity"
         );
@@ -813,6 +907,11 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                 guiGraphics,
                 REVEAL_MULTIPLIER,
                 "screen.aerocloakingcore.server_config.reveal_distance_multiplier"
+        );
+        drawRowLabel(
+                guiGraphics,
+                CLOAK_DISTANCE_MODE,
+                "screen.aerocloakingcore.server_config.cloak_distance_mode"
         );
 
         drawSectionHeader(
@@ -832,9 +931,11 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         renderContentWidget(aboardFade, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(leaveGrace, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(leaveFade, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(entityCloakBehaviorButton, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(proximityRevealButton, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(fullyVisibleDistance, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(revealDistanceMultiplier, guiGraphics, mouseX, mouseY, partialTick);
+        renderContentWidget(cloakDistanceModeButton, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(ropeBehaviorButton, guiGraphics, mouseX, mouseY, partialTick);
 
         guiGraphics.disableScissor();

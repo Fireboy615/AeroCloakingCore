@@ -21,6 +21,7 @@
     "client.FlywheelLevelRendererAlphaMixin",
     "client.LevelRendererAlphaBlockEntityMixin",
     "client.LevelRendererAlphaEntityMixin",
+    "client.LevelRendererEntityOcclusionMaskMixin",
     "client.BlockEntityRenderDispatcherCloakMixin",
     "client.EntityRenderDispatcherMixin",
     "client.ParticleEngineCloakMixin",

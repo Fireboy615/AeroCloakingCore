@@ -4,6 +4,7 @@ import net.fireboy.aerocloakingcore.client.CloakEasing;
 import net.fireboy.aerocloakingcore.server.config.AeroCloakingCoreServerConfig;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 
+
 /**
  * Small network-safe snapshot of the server config that clients need while rendering.
  */
@@ -17,6 +18,8 @@ public record CloakingServerSettings(
         boolean proximityRevealEnabled,
         double fullyVisibleDistance,
         double revealDistanceMultiplier,
+        CloakDistanceMode cloakDistanceMode,
+        EntityCloakBehavior entityCloakBehavior,
         RopeCloakBehavior ropeCloakBehavior
 ) {
 
@@ -39,6 +42,8 @@ public record CloakingServerSettings(
             true,
             DEFAULT_FULLY_VISIBLE_DISTANCE_BLOCKS,
             1.0,
+            CloakDistanceMode.CLOSEST_FACE,
+            EntityCloakBehavior.MATCH_SHIP,
             RopeCloakBehavior.GRADIENT
     );
 
@@ -53,6 +58,8 @@ public record CloakingServerSettings(
                 AeroCloakingCoreServerConfig.PROXIMITY_REVEAL_ENABLED.get(),
                 AeroCloakingCoreServerConfig.FULLY_VISIBLE_DISTANCE.get(),
                 AeroCloakingCoreServerConfig.REVEAL_DISTANCE_MULTIPLIER.get(),
+                AeroCloakingCoreServerConfig.CLOAK_DISTANCE_MODE.get(),
+                AeroCloakingCoreServerConfig.ENTITY_CLOAK_BEHAVIOR.get(),
                 AeroCloakingCoreServerConfig.ROPE_CLOAK_BEHAVIOR.get()
         ).normalized();
     }
@@ -68,6 +75,8 @@ public record CloakingServerSettings(
                 proximityRevealEnabled,
                 clamp(fullyVisibleDistance, 0.0, 64.0),
                 clamp(revealDistanceMultiplier, 0.0, 10.0),
+                cloakDistanceMode == null ? CloakDistanceMode.CLOSEST_FACE : cloakDistanceMode,
+                entityCloakBehavior == null ? EntityCloakBehavior.MATCH_SHIP : entityCloakBehavior,
                 ropeCloakBehavior == null ? RopeCloakBehavior.GRADIENT : ropeCloakBehavior
         );
     }
@@ -84,6 +93,8 @@ public record CloakingServerSettings(
         buffer.writeBoolean(value.proximityRevealEnabled());
         buffer.writeDouble(value.fullyVisibleDistance());
         buffer.writeDouble(value.revealDistanceMultiplier());
+        buffer.writeVarInt(value.cloakDistanceMode().ordinal());
+        buffer.writeVarInt(value.entityCloakBehavior().ordinal());
         buffer.writeVarInt(value.ropeCloakBehavior().ordinal());
     }
 
@@ -98,6 +109,8 @@ public record CloakingServerSettings(
                 buffer.readBoolean(),
                 buffer.readDouble(),
                 buffer.readDouble(),
+                enumByOrdinal(CloakDistanceMode.values(), buffer.readVarInt(), CloakDistanceMode.CLOSEST_FACE),
+                enumByOrdinal(EntityCloakBehavior.values(), buffer.readVarInt(), EntityCloakBehavior.MATCH_SHIP),
                 enumByOrdinal(RopeCloakBehavior.values(), buffer.readVarInt(), RopeCloakBehavior.GRADIENT)
         ).normalized();
     }
