@@ -11,6 +11,7 @@ import dev.simulated_team.simulated.content.blocks.rope.RopeStrandHolderBehavior
 
 import net.fireboy.aerocloakingcore.client.BlockEntityCloakRenderQueue;
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
+import net.fireboy.aerocloakingcore.client.RopeCloakRenderQueue;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -51,6 +52,23 @@ public abstract class BlockEntityRenderDispatcherCloakMixin {
             int packedLight,
             int packedOverlay
     ) {
+        /*
+         * Register the physical rope before any cloak early-return or ALPHA
+         * deferral. The visible rope renderer is not a reliable registration
+         * point at 100% cloak because its owner BER may itself be deferred.
+         */
+        if (blockEntity instanceof SmartBlockEntity smartBlockEntity) {
+            RopeStrandHolderBehavior ropeHolder =
+                    smartBlockEntity.getBehaviour(RopeStrandHolderBehavior.TYPE);
+            if (ropeHolder != null) {
+                RopeCloakRenderQueue.queueEntityOcclusionDepth(
+                        smartBlockEntity,
+                        ropeHolder,
+                        partialTick
+                );
+            }
+        }
+
         SubLevel subLevel = Sable.HELPER.getContaining(blockEntity);
 
         if (!(subLevel instanceof ClientSubLevel clientSubLevel)) {

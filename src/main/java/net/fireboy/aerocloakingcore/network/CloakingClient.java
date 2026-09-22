@@ -152,9 +152,21 @@ public final class CloakingClient {
             List<CloakingSyncPayload.Entry> entries,
             CloakingServerSettings serverSettings
     ) {
+        boolean wasEnabled = SERVER_SETTINGS.modEnabled();
         SERVER_SETTINGS = serverSettings != null
                 ? serverSettings.normalized()
                 : CloakingServerSettings.DEFAULT;
+
+        if (wasEnabled != SERVER_SETTINGS.modEnabled()) {
+            VIEWER_VISIBILITY.clear();
+            LEAVE_VISIBILITY.clear();
+            LAST_EFFECTIVE_VIEWER_STRENGTH.clear();
+            ENTITY_VISIBILITY.clear();
+            ENTITY_VISUAL_CACHE.clear();
+            BLOCK_DISTANCE_CACHE.clear();
+            HULL_ENVELOPES.clear();
+            lastViewerSubLevelId = null;
+        }
 
         Set<UUID> incoming = new HashSet<>();
         Set<UUID> known = new HashSet<>(TRANSITIONS.keySet());
@@ -262,6 +274,10 @@ public final class CloakingClient {
     }
 
     public static float getCloakStrength(UUID subLevelId) {
+        if (!isModEnabled()) {
+            return 0.0F;
+        }
+
         CloakTransition transition = TRANSITIONS.get(subLevelId);
 
         if (transition == null) {
@@ -319,6 +335,10 @@ public final class CloakingClient {
     }
 
     public static float getViewerCloakStrength(UUID subLevelId) {
+        if (!isModEnabled()) {
+            return 0.0F;
+        }
+
         long now = System.nanoTime();
         SubLevel viewerSubLevel = getViewerSubLevel();
 
@@ -356,6 +376,10 @@ public final class CloakingClient {
     }
 
     public static float getViewerCloakStrength(ClientSubLevel subLevel) {
+        if (!isModEnabled()) {
+            return 0.0F;
+        }
+
         UUID subLevelId = subLevel.getUniqueId();
         long now = System.nanoTime();
         SubLevel viewerSubLevel = getViewerSubLevel();
@@ -1125,6 +1149,10 @@ public final class CloakingClient {
         return SERVER_SETTINGS.proximityRevealEnabled();
     }
 
+    public static boolean isModEnabled() {
+        return SERVER_SETTINGS.modEnabled();
+    }
+
     public static net.fireboy.aerocloakingcore.cloak.RopeCloakBehavior getRopeCloakBehavior() {
         return SERVER_SETTINGS.ropeCloakBehavior();
     }
@@ -1213,7 +1241,8 @@ public final class CloakingClient {
     }
 
     public static boolean usesEntityOcclusionMask() {
-        return SERVER_SETTINGS.entityCloakBehavior()
+        return isModEnabled()
+                && SERVER_SETTINGS.entityCloakBehavior()
                 == EntityCloakBehavior.OCCLUDED_ONLY;
     }
 
@@ -1243,7 +1272,7 @@ public final class CloakingClient {
      * cloaks to outside observers.
      */
     private static EntityCloakVisual getEntityCloakVisual(Entity entity) {
-        if (entity == null) {
+        if (entity == null || !isModEnabled()) {
             return EntityCloakVisual.VISIBLE;
         }
 

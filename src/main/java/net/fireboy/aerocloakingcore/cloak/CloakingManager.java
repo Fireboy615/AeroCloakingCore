@@ -589,11 +589,15 @@ public final class CloakingManager {
                 continue;
             }
 
+            CloakingCoreSettings syncedSettings = serverSettings.modEnabled()
+                    ? system.publishedSettings
+                    : system.publishedSettings.withCloakStrength(0.0F);
+
             for (UUID memberId : system.memberBlockCounts.keySet()) {
                 entries.add(new CloakingSyncPayload.Entry(
                         memberId,
                         system.systemId,
-                        system.publishedSettings,
+                        syncedSettings,
                         system.publishedTransitionDurationSeconds,
                         system.publishedFullyCloakedDistance
                 ));
@@ -616,6 +620,10 @@ public final class CloakingManager {
     // ---------------------------------------------------------------------
 
     public static boolean isCloaked(UUID subLevelId) {
+        if (!CloakingServerSettings.fromConfig().modEnabled()) {
+            return false;
+        }
+
         CloakSystem system = systemForSubLevel(subLevelId);
         return system != null
                 && system.publishedSettings != null
@@ -623,6 +631,10 @@ public final class CloakingManager {
     }
 
     public static Map<UUID, CloakingCoreSettings> getCloakedSubLevels() {
+        if (!CloakingServerSettings.fromConfig().modEnabled()) {
+            return Collections.emptyMap();
+        }
+
         Map<UUID, CloakingCoreSettings> result = new HashMap<>();
 
         for (CloakSystem system : SYSTEMS.values()) {

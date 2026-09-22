@@ -34,7 +34,12 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private static final int SECTION_GAP = 8;
     private static final int BOTTOM_PADDING = 8;
 
-    private static final int TRANSITION_HEADER = 0;
+    private static final int GENERAL_HEADER = 0;
+    private static final int MOD_ENABLED =
+            GENERAL_HEADER + SECTION_HEADER_HEIGHT;
+
+    private static final int TRANSITION_HEADER =
+            MOD_ENABLED + ROW_HEIGHT + SECTION_GAP;
     private static final int TRANSITION_DURATION =
             TRANSITION_HEADER + SECTION_HEADER_HEIGHT;
     private static final int TRANSITION_EASING =
@@ -88,6 +93,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private EditBox fullyVisibleDistance;
     private EditBox revealDistanceMultiplier;
 
+    private Button modEnabledButton;
     private Button easingButton;
     private Button visibleWhileAboardButton;
     private Button proximityRevealButton;
@@ -99,6 +105,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     private Button resetButton;
     private Button saveButton;
 
+    private boolean modEnabled = true;
     private CloakEasing transitionEasing = CloakEasing.SMOOTHSTEP;
     private boolean visibleWhileAboard = true;
     private boolean proximityRevealEnabled = true;
@@ -152,6 +159,18 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         int buttonX = (width - buttonsWidth) / 2;
         buttonY = height - 30;
         viewportBottom = buttonY - 10;
+
+        modEnabledButton = addRenderableWidget(
+                Button.builder(
+                                masterToggleMessage(),
+                                button -> {
+                                    modEnabled = !modEnabled;
+                                    refreshToggleMessages();
+                                }
+                        )
+                        .bounds(controlX, 0, controlWidth, 20)
+                        .build()
+        );
 
         transitionDuration = createNumberBox(
                 controlX,
@@ -457,6 +476,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
 
         try {
             CloakingServerSettings settings = new CloakingServerSettings(
+                    modEnabled,
                     parseFloat(transitionDuration),
                     transitionEasing,
                     visibleWhileAboard,
@@ -498,6 +518,8 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
 
     private void applySettings(CloakingServerSettings settings) {
         CloakingServerSettings normalized = settings.normalized();
+
+        modEnabled = normalized.modEnabled();
 
         if (transitionDuration != null) {
             transitionDuration.setValue(
@@ -602,11 +624,23 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
         );
     }
 
+    private Component masterToggleMessage() {
+        return Component.translatable(
+                modEnabled
+                        ? "screen.aerocloakingcore.server_config.mod_enabled.on"
+                        : "screen.aerocloakingcore.server_config.mod_enabled.off"
+        );
+    }
+
     private static Component toggleMessage(boolean enabled) {
         return Component.literal(enabled ? "ON" : "OFF");
     }
 
     private void refreshToggleMessages() {
+        if (modEnabledButton != null) {
+            modEnabledButton.setMessage(masterToggleMessage());
+        }
+
         if (easingButton != null) {
             easingButton.setMessage(easingValueMessage());
         }
@@ -634,6 +668,10 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
 
     private void updateControlState() {
         boolean editable = valuesLoaded && canEdit;
+
+        if (modEnabledButton != null) {
+            modEnabledButton.active = editable;
+        }
 
         setEditable(transitionDuration, editable);
         setEditable(aboardFade, editable);
@@ -704,6 +742,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
     }
 
     private void positionContentWidgets() {
+        positionWidget(modEnabledButton, MOD_ENABLED);
         positionWidget(transitionDuration, TRANSITION_DURATION);
         positionWidget(easingButton, TRANSITION_EASING);
         positionWidget(visibleWhileAboardButton, VISIBLE_ABOARD);
@@ -837,6 +876,17 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
 
         drawSectionHeader(
                 guiGraphics,
+                GENERAL_HEADER,
+                "screen.aerocloakingcore.server_config.section.general"
+        );
+        drawRowLabel(
+                guiGraphics,
+                MOD_ENABLED,
+                "screen.aerocloakingcore.server_config.mod_enabled"
+        );
+
+        drawSectionHeader(
+                guiGraphics,
                 TRANSITION_HEADER,
                 "screen.aerocloakingcore.server_config.section.transition"
         );
@@ -925,6 +975,7 @@ public final class AeroCloakingCoreConfigScreen extends Screen {
                 "screen.aerocloakingcore.server_config.rope_behavior"
         );
 
+        renderContentWidget(modEnabledButton, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(transitionDuration, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(easingButton, guiGraphics, mouseX, mouseY, partialTick);
         renderContentWidget(visibleWhileAboardButton, guiGraphics, mouseX, mouseY, partialTick);

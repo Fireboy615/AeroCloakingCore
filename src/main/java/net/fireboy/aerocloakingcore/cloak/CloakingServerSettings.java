@@ -9,6 +9,7 @@ import net.minecraft.network.RegistryFriendlyByteBuf;
  * Small network-safe snapshot of the server config that clients need while rendering.
  */
 public record CloakingServerSettings(
+        boolean modEnabled,
         float transitionDurationSeconds,
         CloakEasing transitionEasing,
         boolean visibleWhileAboard,
@@ -33,6 +34,7 @@ public record CloakingServerSettings(
     public static final double BASE_REVEAL_GAP_BLOCKS = 10.0;
 
     public static final CloakingServerSettings DEFAULT = new CloakingServerSettings(
+            true,
             3.0F,
             CloakEasing.SMOOTHSTEP,
             true,
@@ -49,6 +51,7 @@ public record CloakingServerSettings(
 
     public static CloakingServerSettings fromConfig() {
         return new CloakingServerSettings(
+                AeroCloakingCoreServerConfig.MOD_ENABLED.get(),
                 AeroCloakingCoreServerConfig.TRANSITION_DURATION_SECONDS.get().floatValue(),
                 AeroCloakingCoreServerConfig.TRANSITION_EASING.get(),
                 AeroCloakingCoreServerConfig.VISIBLE_WHILE_ABOARD.get(),
@@ -66,6 +69,7 @@ public record CloakingServerSettings(
 
     public CloakingServerSettings normalized() {
         return new CloakingServerSettings(
+                modEnabled,
                 clamp(transitionDurationSeconds, 0.0F, 30.0F),
                 transitionEasing == null ? CloakEasing.SMOOTHSTEP : transitionEasing,
                 visibleWhileAboard,
@@ -84,6 +88,7 @@ public record CloakingServerSettings(
     public void write(RegistryFriendlyByteBuf buffer) {
         CloakingServerSettings value = normalized();
 
+        buffer.writeBoolean(value.modEnabled());
         buffer.writeFloat(value.transitionDurationSeconds());
         buffer.writeVarInt(value.transitionEasing().ordinal());
         buffer.writeBoolean(value.visibleWhileAboard());
@@ -100,6 +105,7 @@ public record CloakingServerSettings(
 
     public static CloakingServerSettings read(RegistryFriendlyByteBuf buffer) {
         return new CloakingServerSettings(
+                buffer.readBoolean(),
                 buffer.readFloat(),
                 enumByOrdinal(CloakEasing.values(), buffer.readVarInt(), CloakEasing.SMOOTHSTEP),
                 buffer.readBoolean(),

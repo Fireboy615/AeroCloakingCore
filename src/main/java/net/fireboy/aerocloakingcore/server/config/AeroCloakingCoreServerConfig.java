@@ -13,6 +13,8 @@ public final class AeroCloakingCoreServerConfig {
 
     public static final ModConfigSpec SPEC;
 
+    public static final ModConfigSpec.BooleanValue MOD_ENABLED;
+
     public static final ModConfigSpec.DoubleValue TRANSITION_DURATION_SECONDS;
     public static final ModConfigSpec.EnumValue<CloakEasing> TRANSITION_EASING;
 
@@ -31,6 +33,20 @@ public final class AeroCloakingCoreServerConfig {
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
+
+        builder
+                .comment("Emergency master switch for Aero Cloaking Core functionality.")
+                .push("general");
+
+        MOD_ENABLED = builder
+                .comment(
+                        "Master switch for Aero Cloaking Core.",
+                        "When false, cloaking and its special render paths are disabled at runtime.",
+                        "Blocks/items remain registered so the mod can be re-enabled safely."
+                )
+                .define("enabled", true);
+
+        builder.pop();
 
         builder
                 .comment("Server-authoritative cloak transition settings.")
@@ -161,6 +177,8 @@ public final class AeroCloakingCoreServerConfig {
         leaveFade = clamp(leaveFade, 0.0F, 60.0F);
         fullyVisibleDistance = clamp(fullyVisibleDistance, 0.0, 64.0);
         revealMultiplier = clamp(revealMultiplier, 0.0, 10.0);
+
+        MOD_ENABLED.set(normalized.modEnabled());
 
         TRANSITION_DURATION_SECONDS.set((double) transitionDuration);
         TRANSITION_EASING.set(

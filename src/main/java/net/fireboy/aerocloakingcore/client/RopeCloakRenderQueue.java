@@ -1,8 +1,10 @@
 package net.fireboy.aerocloakingcore.client;
 
 import com.mojang.blaze3d.vertex.ByteBufferBuilder;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.mojang.blaze3d.vertex.VertexFormat;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.foundation.blockEntity.SmartBlockEntity;
 
@@ -29,11 +31,13 @@ import net.fireboy.aerocloakingcore.network.CloakingClient;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.RenderStateShard;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
@@ -42,7 +46,10 @@ import org.joml.Vector3dc;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Direction-independent cloak rendering for Simulated rope strands.
@@ -58,7 +65,51 @@ public final class RopeCloakRenderQueue {
     private static final double ENDPOINT_QUERY_RADIUS = 2.5;
     private static final int ENDPOINT_HOLDER_SEARCH_RADIUS = 2;
 
+    /** Exact half-width of Simulated's rope model: 3 pixels wide = 3/16 block. */
+    private static final float ROPE_HALF_WIDTH = 3.0F / 32.0F;
+
+    /** Half-width of Simulated's 4-pixel rope knot model. */
+    private static final float KNOT_HALF_WIDTH = 1.0F / 8.0F;
+
+    /**
+     * A shader-independent depth-only proxy used by OCCLUDED_ONLY.
+     *
+     * The previous attempts replayed Simulated's textured block-model rope.
+     * That meant the mask still passed through the solid block shader and its
+     * cloak/discard state. At full cloak the visible rope could disappear before
+     * a useful depth fragment was ever written. This proxy uses only
+     * POSITION_COLOR and DEPTH_WRITE, so cloak alpha/dither cannot affect it.
+     */
+    private static final RenderType ENTITY_OCCLUSION_DEPTH_TYPE =
+            RenderType.create(
+                    "aerocloakingcore_rope_entity_occlusion_proxy",
+                    DefaultVertexFormat.POSITION_COLOR,
+                    VertexFormat.Mode.TRIANGLE_STRIP,
+                    BUFFER_SIZE,
+                    false,
+                    false,
+                    RenderType.CompositeState.builder()
+                            .setShaderState(RenderStateShard.POSITION_COLOR_SHADER)
+                            .setTransparencyState(RenderStateShard.NO_TRANSPARENCY)
+                            .setDepthTestState(RenderStateShard.LEQUAL_DEPTH_TEST)
+                            .setCullState(RenderStateShard.NO_CULL)
+                            .setWriteMaskState(RenderStateShard.DEPTH_WRITE)
+                            .setOutputState(RenderStateShard.MAIN_TARGET)
+                            .createCompositeState(false)
+            );
+
     private static final List<DeferredRope> ALPHA_QUEUE = new ArrayList<>();
+
+    /**
+     * Physical rope geometry replayed as temporary depth during OCCLUDED_ONLY.
+     * This keeps a rope masking entities even when its colour reaches 0 alpha.
+     */
+    private static final List<DeferredRopeOccluder> ENTITY_OCCLUSION_DEPTH_QUEUE =
+            new ArrayList<>();
+
+    /** Avoid registering the same physical client strand twice in one frame. */
+    private static final Set<ClientRopeStrand> ENTITY_OCCLUSION_STRANDS =
+            Collections.newSetFromMap(new IdentityHashMap<>());
 
     private static final ThreadLocal<ArrayDeque<BufferSlot>> BUFFER_POOL =
             ThreadLocal.withInitial(ArrayDeque::new);
@@ -68,6 +119,8 @@ public final class RopeCloakRenderQueue {
 
     public static void beginFrame() {
         ALPHA_QUEUE.clear();
+        ENTITY_OCCLUSION_DEPTH_QUEUE.clear();
+        ENTITY_OCCLUSION_STRANDS.clear();
     }
 
     /**
@@ -100,6 +153,12 @@ public final class RopeCloakRenderQueue {
             return false;
         }
 
+        // Fallback registration for render paths that do reach Simulated's rope
+        // renderer. BlockEntityRenderDispatcherCloakMixin also registers earlier
+        // so full-cloak BE deferral/skips cannot make the rope disappear from
+        // the entity mask. The identity set makes this call idempotent.
+        queueEntityOcclusionDepth(blockEntity, ropeHolder, partialTick);
+
         if (endpoints.requiresLateAlphaPass()) {
             ALPHA_QUEUE.add(new DeferredRope(
                     blockEntity,
@@ -114,11 +173,57 @@ public final class RopeCloakRenderQueue {
                     ropeHolder,
                     partialTick,
                     poseStack,
-                    endpoints
+                    endpoints,
+                    false
             );
         }
 
         return true;
+    }
+
+    /**
+     * Registers a physical rope for the OCCLUDED_ONLY entity mask.
+     *
+     * This is intentionally callable before the rope's visual renderer. Fully
+     * cloaked rope-holder block entities can be deferred or skipped by the
+     * normal cloak path, but the rope must still exist as invisible occlusion
+     * geometry.
+     */
+    public static void queueEntityOcclusionDepth(
+            SmartBlockEntity blockEntity,
+            RopeStrandHolderBehavior ropeHolder,
+            float partialTick
+    ) {
+        if (!CloakingClient.usesEntityOcclusionMask()
+                || ropeHolder == null
+                || !ropeHolder.ownsRope()) {
+            return;
+        }
+
+        ClientRopeStrand strand = ropeHolder.getClientStrand();
+        if (strand == null || strand.getPoints().size() <= 1) {
+            return;
+        }
+
+        if (ENTITY_OCCLUSION_STRANDS.contains(strand)) {
+            return;
+        }
+
+        EndpointState endpoints = resolveEndpointState(
+                blockEntity,
+                ropeHolder,
+                strand,
+                partialTick
+        );
+
+        if (endpoints == null || endpoints.maxStrength() <= 0.001F) {
+            return;
+        }
+
+        ENTITY_OCCLUSION_STRANDS.add(strand);
+        ENTITY_OCCLUSION_DEPTH_QUEUE.add(
+                new DeferredRopeOccluder(ropeHolder, partialTick)
+        );
     }
 
     public static void renderQueued() {
@@ -135,7 +240,8 @@ public final class RopeCloakRenderQueue {
                         rope.ropeHolder(),
                         rope.partialTick(),
                         rope.poseStack(),
-                        rope.endpoints()
+                        rope.endpoints(),
+                        false
                 );
             }
         } finally {
@@ -144,12 +250,122 @@ public final class RopeCloakRenderQueue {
         }
     }
 
+    public static boolean hasEntityOcclusionDepth() {
+        return !ENTITY_OCCLUSION_DEPTH_QUEUE.isEmpty();
+    }
+
+    /**
+     * Replays handled rope geometry into depth only for the late entity mask.
+     *
+     * <p>Unlike the visible rope pass, this deliberately does not skip segments
+     * whose cloak strength reached 1.0. The physical rope remains an occluder
+     * even when its colour is completely invisible.</p>
+     */
+    public static void renderEntityOcclusionDepthPrepass() {
+        if (ENTITY_OCCLUSION_DEPTH_QUEUE.isEmpty()) {
+            return;
+        }
+
+        Minecraft minecraft = Minecraft.getInstance();
+        Vec3 cameraPosition = minecraft.gameRenderer.getMainCamera().getPosition();
+
+        BufferSlot slot = acquireBuffer();
+        try {
+            VertexConsumer consumer = slot.source.getBuffer(ENTITY_OCCLUSION_DEPTH_TYPE);
+
+            for (DeferredRopeOccluder rope : ENTITY_OCCLUSION_DEPTH_QUEUE) {
+                ClientRopeStrand strand = rope.ropeHolder().getClientStrand();
+                if (strand == null || strand.getPoints().size() <= 1) {
+                    continue;
+                }
+
+                ObjectArrayList<RopeRenderPoint> points = buildRenderPoints(
+                        rope.partialTick(),
+                        strand.getPoints()
+                );
+
+                renderDepthProxy(points, cameraPosition, consumer);
+            }
+
+            slot.source.endBatch(ENTITY_OCCLUSION_DEPTH_TYPE);
+        } finally {
+            try {
+                slot.source.endBatch();
+            } finally {
+                releaseBuffer(slot);
+            }
+        }
+    }
+
+    /**
+     * Draws a simple prism along every physical Simulated rope segment.
+     *
+     * The dimensions match Simulated's rope JSON (6.5 -> 9.5 pixels) and knot
+     * JSON (6 -> 10 pixels). Because this geometry is submitted through a plain
+     * POSITION_COLOR depth-only RenderType, it is completely independent of the
+     * rope's visible alpha/dither/cloak shader state.
+     */
+    private static void renderDepthProxy(
+            ObjectArrayList<RopeRenderPoint> points,
+            Vec3 cameraPosition,
+            VertexConsumer consumer
+    ) {
+        if (points.size() <= 1) {
+            return;
+        }
+
+        for (int i = 1; i < points.size(); i++) {
+            RopeRenderPoint point0 = points.get(i - 1);
+            RopeRenderPoint point1 = points.get(i);
+            double length = point1.position().distance(point0.position());
+
+            if (length <= 1.0E-6) {
+                continue;
+            }
+
+            PoseStack segmentPose = new PoseStack();
+            segmentPose.translate(
+                    point0.position().x - cameraPosition.x,
+                    point0.position().y - cameraPosition.y,
+                    point0.position().z - cameraPosition.z
+            );
+            segmentPose.mulPose(new Quaternionf(point0.orientation()));
+
+            if (i > 1) {
+                LevelRenderer.addChainedFilledBoxVertices(
+                        segmentPose,
+                        consumer,
+                        -KNOT_HALF_WIDTH,
+                        -KNOT_HALF_WIDTH,
+                        -KNOT_HALF_WIDTH,
+                        KNOT_HALF_WIDTH,
+                        KNOT_HALF_WIDTH,
+                        KNOT_HALF_WIDTH,
+                        1.0F, 1.0F, 1.0F, 1.0F
+                );
+            }
+
+            LevelRenderer.addChainedFilledBoxVertices(
+                    segmentPose,
+                    consumer,
+                    -ROPE_HALF_WIDTH,
+                    0.0,
+                    -ROPE_HALF_WIDTH,
+                    ROPE_HALF_WIDTH,
+                    length,
+                    ROPE_HALF_WIDTH,
+                    1.0F, 1.0F, 1.0F, 1.0F
+            );
+        }
+    }
+
     private static void renderRope(
             SmartBlockEntity blockEntity,
             RopeStrandHolderBehavior ropeHolder,
             float partialTick,
             PoseStack poseStack,
-            EndpointState endpoints
+            EndpointState endpoints,
+            boolean depthOnly
     ) {
         Level level = blockEntity.getLevel();
         ClientRopeStrand strand = ropeHolder.getClientStrand();
@@ -214,7 +430,7 @@ public final class RopeCloakRenderQueue {
                 SegmentVisual segmentVisual = endpoints.visualAt(segmentT);
                 float segmentStrength = segmentVisual.logicalStrength();
 
-                if (segmentStrength >= 0.999F) {
+                if (!depthOnly && segmentStrength >= 0.999F) {
                     continue;
                 }
 
@@ -933,6 +1149,12 @@ public final class RopeCloakRenderQueue {
 
         private final MultiBufferSource.BufferSource source =
                 MultiBufferSource.immediate(backing);
+    }
+
+    private record DeferredRopeOccluder(
+            RopeStrandHolderBehavior ropeHolder,
+            float partialTick
+    ) {
     }
 
     private record DeferredRope(
