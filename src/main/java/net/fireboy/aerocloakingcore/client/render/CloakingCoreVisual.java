@@ -25,12 +25,12 @@ import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 
 /**
- * Flywheel-rendered rotor for the Cloaking Core.
+ * Flywheel-rendered mirror assembly for the Cloaking Core.
  *
  * Rendering this through Flywheel instead of a vanilla BlockEntityRenderer is
  * important for AeroCloakingCore: Sable gives each sublevel a Flywheel
  * embedding, and the existing cloaking shader/embedding hooks operate on those
- * Flywheel visuals. This means the rotor follows the same DITHER/ALPHA cloak
+ * Flywheel visuals. This means the mirrors follow the same DITHER/ALPHA cloak
  * path as Create's own moving components.
  */
 public final class CloakingCoreVisual
@@ -41,14 +41,23 @@ public final class CloakingCoreVisual
     private final Direction facing;
     private final Quaternionf facingRotation;
 
-    private final @Nullable TransformedInstance shaftInstance;
-    private final @Nullable TransformedInstance paneInstance;
+    private final @Nullable TransformedInstance mirrorInstance;
+    private final @Nullable TransformedInstance inputShaftInstance;
 
-    /** Rotor speed relative to the connected Create input shaft. */
-    private static final double ROTOR_SPEED_RATIO = 0.5;
+    /** Mirror speed relative to the connected Create input shaft. */
+    private static final double MIRROR_SPEED_RATIO = 0.5;
 
-    /** Continuous client-side rotor phase, in radians. */
-    private double rotorAngleRadians = 0.0;
+    /** The short input shaft stub rotates at the actual network shaft speed. */
+    private static final double INPUT_SHAFT_SPEED_RATIO = 1.0;
+
+    /**
+     * Offset the mirror assembly one full block forward so it sits out in the
+     * chamber instead of inside the drive block.
+     */
+    private static final float MIRROR_FORWARD_OFFSET_PIXELS = 9.0F;
+
+    /** Continuous client-side mirror phase, in radians. */
+    private double mirrorAngleRadians = 0.0;
     private double lastRenderTick = Double.NaN;
 
     public CloakingCoreVisual(
@@ -68,27 +77,27 @@ public final class CloakingCoreVisual
         this.facingRotation = rotationFromSouthTo(facing);
 
         if (!driveHalf) {
-            shaftInstance = null;
-            paneInstance = null;
+            mirrorInstance = null;
+            inputShaftInstance = null;
             return;
         }
 
-        Model shaftModel = Models.partial(CloakingCoreModels.ROTOR_SHAFT);
-        Model paneModel = Models.partial(CloakingCoreModels.ROTOR_PANES);
+        Model mirrorModel = Models.partial(CloakingCoreModels.MIRRORS);
+        Model inputShaftModel = Models.partial(CloakingCoreModels.INPUT_SHAFT);
 
-        shaftInstance = instancerProvider()
-                .instancer(InstanceTypes.TRANSFORMED, shaftModel)
+        mirrorInstance = instancerProvider()
+                .instancer(InstanceTypes.TRANSFORMED, mirrorModel)
                 .createInstance();
 
-        paneInstance = instancerProvider()
-                .instancer(InstanceTypes.TRANSFORMED, paneModel)
+        inputShaftInstance = instancerProvider()
+                .instancer(InstanceTypes.TRANSFORMED, inputShaftModel)
                 .createInstance();
 
-        shaftInstance.overlay(OverlayTexture.NO_OVERLAY);
-        paneInstance.overlay(OverlayTexture.NO_OVERLAY);
+        mirrorInstance.overlay(OverlayTexture.NO_OVERLAY);
+        inputShaftInstance.overlay(OverlayTexture.NO_OVERLAY);
 
         updateLight(partialTick);
-        updateRotorTransform(partialTick);
+        updateMirrorTransform(partialTick);
     }
 
     @Override
@@ -97,7 +106,7 @@ public final class CloakingCoreVisual
             return;
         }
 
-        updateRotorTransform(context.partialTick());
+        updateMirrorTransform(context.partialTick());
     }
 
     @Override
@@ -106,11 +115,11 @@ public final class CloakingCoreVisual
             return;
         }
 
-        updateRotorTransform(partialTick);
+        updateMirrorTransform(partialTick);
     }
 
-    private void updateRotorTransform(float partialTick) {
-        if (shaftInstance == null || paneInstance == null) {
+    private void updateMirrorTransform(float partialTick) {
+        if (mirrorInstance == null || inputShaftInstance == null) {
             return;
         }
 
@@ -130,88 +139,102 @@ public final class CloakingCoreVisual
             deltaTicks = 0.0;
         }
 
-        // 1 RPM = 2*pi radians / 1200 game ticks. Integrating the actual
-        // signed input speed gives a smooth rotor at exactly 1/2 shaft speed
-        // without the wraparound jump caused by scaling Create's wrapped angle.
-        double radiansPerTick = blockEntity.getSpeed()
-                * (Math.PI * 2.0 / 1200.0)
-                * ROTOR_SPEED_RATIO;
+        // 1 RPM = 2*pi radians / 1200 game ticks.
+        double baseRadiansPerTick = blockEntity.getSpeed()
+                * (Math.PI * 2.0 / 1200.0);
 
-        rotorAngleRadians += radiansPerTick * deltaTicks;
+        double mirrorRadiansPerTick = baseRadiansPerTick * MIRROR_SPEED_RATIO;
+        mirrorAngleRadians += mirrorRadiansPerTick * deltaTicks;
 
-        // Keep the accumulator numerically tidy while preserving continuity.
-        if (Math.abs(rotorAngleRadians) > Math.PI * 4096.0) {
-            rotorAngleRadians %= Math.PI * 2.0;
+        // Keep the accumulators numerically tidy while preserving continuity.
+        if (Math.abs(mirrorAngleRadians) > Math.PI * 4096.0) {
+            mirrorAngleRadians %= Math.PI * 2.0;
         }
 
-        float angleRadians = (float) rotorAngleRadians;
+        float mirrorAngle = (float) mirrorAngleRadians;
+        float inputShaftAngle = (float) ((mirrorAngleRadians / MIRROR_SPEED_RATIO) * INPUT_SHAFT_SPEED_RATIO);
 
         /*
          * Create's kinetic sign is axis-relative. Our Blockbench model's local
          * +Z axis is rotated onto FACING, so invert negative axis directions to
-         * keep the visible rotor direction consistent with the input shaft.
+         * keep the visible rotation consistent with the connected input shaft.
          */
         if (facing.getAxisDirection() == Direction.AxisDirection.NEGATIVE) {
-            angleRadians = -angleRadians;
+            mirrorAngle = -mirrorAngle;
+            inputShaftAngle = -inputShaftAngle;
         }
 
         /*
-         * The two partial models are authored with their long axis toward
-         * SOUTH (+Z). They are already positioned correctly relative to the
-         * drive/chamber seam in model space.
-         *
-         * 1) Move the model to the block's Flywheel visual position.
-         * 2) Rotate local SOUTH onto the block FACING direction.
-         * 3) Rotate around the shaft axis (local Z) through the drive center.
+         * The Blockbench model is authored with its long axis toward SOUTH
+         * (+Z). Shift the mirror pack forward so it sits out in the chamber,
+         * while a separate 2 px shaft stub remains at the rear input face.
          */
-        Matrix4f transform = new Matrix4f()
+        Matrix4f mirrorTransform = new Matrix4f()
                 .translation(
                         visualPos.getX() + 0.5F,
                         visualPos.getY() + 0.5F,
                         visualPos.getZ() + 0.5F
                 )
                 .rotate(facingRotation)
-                .rotateZ(angleRadians)
+                .translate(0.0F, 0.0F, MIRROR_FORWARD_OFFSET_PIXELS / 16.0F)
+                .rotateZ(mirrorAngle)
                 .translate(-0.5F, -0.5F, -0.5F);
 
-        shaftInstance.setTransform(transform);
-        paneInstance.setTransform(transform);
+        Matrix4f inputShaftTransform = new Matrix4f()
+                .translation(
+                        visualPos.getX() + 0.5F,
+                        visualPos.getY() + 0.5F,
+                        visualPos.getZ() + 0.5F
+                )
+                .rotate(facingRotation)
+                .rotateZ(inputShaftAngle)
+                .translate(-0.5F, -0.5F, -0.5F);
 
-        shaftInstance.setChanged();
-        paneInstance.setChanged();
+        mirrorInstance.setTransform(mirrorTransform);
+        mirrorInstance.setChanged();
+        inputShaftInstance.setTransform(inputShaftTransform);
+        inputShaftInstance.setChanged();
     }
 
     @Override
     public void updateLight(float partialTick) {
-        if (shaftInstance == null || paneInstance == null) {
+        if (mirrorInstance == null || inputShaftInstance == null) {
             return;
         }
 
-        relight(shaftInstance, paneInstance);
+        // The mirror model sits out in the open chamber and looked too dark
+        // when lit from the chamber block position itself, so sample from the
+        // open air block beyond the chamber.
+        relight(pos.relative(facing, 2), mirrorInstance);
+
+        // The short input shaft lives right at the rear opening. Light it from
+        // the adjacent input-side air block instead of from inside the casing.
+        relight(pos.relative(facing.getOpposite()), inputShaftInstance);
     }
 
     @Override
     public void collectCrumblingInstances(
             Consumer<@Nullable Instance> consumer
     ) {
-        consumer.accept(shaftInstance);
-        consumer.accept(paneInstance);
+        consumer.accept(mirrorInstance);
+        consumer.accept(inputShaftInstance);
     }
 
     @Override
     protected void _delete() {
-        if (shaftInstance != null) {
-            shaftInstance.delete();
+        if (mirrorInstance != null) {
+            mirrorInstance.delete();
         }
 
-        if (paneInstance != null) {
-            paneInstance.delete();
+        if (inputShaftInstance != null) {
+            inputShaftInstance.delete();
         }
     }
 
     /**
-     * The rotor spans the drive block and the adjacent chamber block, so use a
-     * two-block frustum box instead of Flywheel's default one-block sphere.
+     * The shifted mirror model occupies the chamber block and protrudes a few
+     * pixels beyond it, so use a three-block frustum box instead of Flywheel's
+     * default one-block sphere.
      */
     @Override
     public boolean isVisible(FrustumIntersection frustum) {
@@ -220,15 +243,35 @@ public final class CloakingCoreVisual
         }
 
         BlockPos chamberPos = pos.relative(facing);
+        BlockPos farPos = pos.relative(facing, 2);
         BlockPos chamberVisualPos = chamberPos.subtract(renderOrigin());
+        BlockPos farVisualPos = farPos.subtract(renderOrigin());
 
-        float minX = Math.min(visualPos.getX(), chamberVisualPos.getX());
-        float minY = Math.min(visualPos.getY(), chamberVisualPos.getY());
-        float minZ = Math.min(visualPos.getZ(), chamberVisualPos.getZ());
+        float minX = Math.min(
+                visualPos.getX(),
+                Math.min(chamberVisualPos.getX(), farVisualPos.getX())
+        );
+        float minY = Math.min(
+                visualPos.getY(),
+                Math.min(chamberVisualPos.getY(), farVisualPos.getY())
+        );
+        float minZ = Math.min(
+                visualPos.getZ(),
+                Math.min(chamberVisualPos.getZ(), farVisualPos.getZ())
+        );
 
-        float maxX = Math.max(visualPos.getX(), chamberVisualPos.getX()) + 1.0F;
-        float maxY = Math.max(visualPos.getY(), chamberVisualPos.getY()) + 1.0F;
-        float maxZ = Math.max(visualPos.getZ(), chamberVisualPos.getZ()) + 1.0F;
+        float maxX = Math.max(
+                visualPos.getX(),
+                Math.max(chamberVisualPos.getX(), farVisualPos.getX())
+        ) + 1.0F;
+        float maxY = Math.max(
+                visualPos.getY(),
+                Math.max(chamberVisualPos.getY(), farVisualPos.getY())
+        ) + 1.0F;
+        float maxZ = Math.max(
+                visualPos.getZ(),
+                Math.max(chamberVisualPos.getZ(), farVisualPos.getZ())
+        ) + 1.0F;
 
         return frustum.testAab(
                 minX,

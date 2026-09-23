@@ -2,7 +2,13 @@ package net.fireboy.aerocloakingcore.mixin.client;
 
 import net.fireboy.aerocloakingcore.client.RopeCloakRenderQueue;
 
+import net.minecraft.client.Camera;
+import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.LightTexture;
+
+import org.joml.Matrix4f;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -21,7 +27,19 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class LevelRendererRopeCloakMixin {
 
     @Inject(method = "renderLevel", at = @At("HEAD"))
-    private void aerocloakingcore$beginRopeCloakFrame(CallbackInfo ci) {
-        RopeCloakRenderQueue.beginFrame();
+    private void aerocloakingcore$beginRopeCloakFrame(
+            DeltaTracker deltaTracker,
+            boolean renderBlockOutline,
+            Camera camera,
+            GameRenderer gameRenderer,
+            LightTexture lightTexture,
+            Matrix4f frustumMatrix,
+            Matrix4f projectionMatrix,
+            CallbackInfo ci
+    ) {
+        RopeCloakRenderQueue.beginFrame(
+                deltaTracker.getGameTimeDeltaPartialTick(false)
+        );
     }
+
 }

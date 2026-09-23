@@ -1,50 +1,49 @@
 {
   "variants": {
     "chamber=false,facing=south": {
-      "model": "aerocloakingcore:block/cloaking_core_drive"
+      "model": "aerocloakingcore:block/cloaking_core_casing"
     },
     "chamber=false,facing=north": {
-      "model": "aerocloakingcore:block/cloaking_core_drive",
+      "model": "aerocloakingcore:block/cloaking_core_casing",
       "y": 180
     },
     "chamber=false,facing=east": {
-      "model": "aerocloakingcore:block/cloaking_core_drive",
+      "model": "aerocloakingcore:block/cloaking_core_casing",
       "y": 270
     },
     "chamber=false,facing=west": {
-      "model": "aerocloakingcore:block/cloaking_core_drive",
+      "model": "aerocloakingcore:block/cloaking_core_casing",
       "y": 90
     },
     "chamber=false,facing=up": {
-      "model": "aerocloakingcore:block/cloaking_core_drive",
+      "model": "aerocloakingcore:block/cloaking_core_casing",
       "x": 90
     },
     "chamber=false,facing=down": {
-      "model": "aerocloakingcore:block/cloaking_core_drive",
+      "model": "aerocloakingcore:block/cloaking_core_casing",
       "x": 270
     },
-
     "chamber=true,facing=south": {
-      "model": "aerocloakingcore:block/cloaking_core_chamber"
+      "model": "aerocloakingcore:block/cloaking_core_empty"
     },
     "chamber=true,facing=north": {
-      "model": "aerocloakingcore:block/cloaking_core_chamber",
+      "model": "aerocloakingcore:block/cloaking_core_empty",
       "y": 180
     },
     "chamber=true,facing=east": {
-      "model": "aerocloakingcore:block/cloaking_core_chamber",
+      "model": "aerocloakingcore:block/cloaking_core_empty",
       "y": 270
     },
     "chamber=true,facing=west": {
-      "model": "aerocloakingcore:block/cloaking_core_chamber",
+      "model": "aerocloakingcore:block/cloaking_core_empty",
       "y": 90
     },
     "chamber=true,facing=up": {
-      "model": "aerocloakingcore:block/cloaking_core_chamber",
+      "model": "aerocloakingcore:block/cloaking_core_empty",
       "x": 90
     },
     "chamber=true,facing=down": {
-      "model": "aerocloakingcore:block/cloaking_core_chamber",
+      "model": "aerocloakingcore:block/cloaking_core_empty",
       "x": 270
     }
   }

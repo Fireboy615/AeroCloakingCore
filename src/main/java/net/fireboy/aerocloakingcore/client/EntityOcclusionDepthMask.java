@@ -32,9 +32,16 @@ public final class EntityOcclusionDepthMask {
     }
 
     public static void begin() {
-        if (active
-                || !CloakingClient.usesEntityOcclusionMask()
-                || !AlphaSubLevelRenderQueue.hasEntityOcclusionDepth()) {
+        if (active || !CloakingClient.usesEntityOcclusionMask()) {
+            return;
+        }
+
+        boolean hasTerrainDepth =
+                AlphaSubLevelRenderQueue.hasEntityOcclusionDepth();
+        boolean hasRopeDepth =
+                RopeCloakRenderQueue.hasEntityOcclusionDepth();
+
+        if (!hasTerrainDepth && !hasRopeDepth) {
             return;
         }
 
@@ -50,7 +57,12 @@ public final class EntityOcclusionDepthMask {
         depthBackup.copyDepthFrom(main);
         main.bindWrite(false);
 
-        AlphaSubLevelRenderQueue.renderEntityOcclusionDepthPrepass();
+        if (hasTerrainDepth) {
+            AlphaSubLevelRenderQueue.renderEntityOcclusionDepthPrepass();
+        }
+        if (hasRopeDepth) {
+            RopeCloakRenderQueue.renderEntityOcclusionDepthPrepass();
+        }
         main.bindWrite(false);
         RenderSystem.depthMask(true);
 

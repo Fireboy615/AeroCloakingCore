@@ -172,11 +172,12 @@ public final class CloakingCoreBlockEntityRenderer
             return new AABB(drivePos);
         }
 
-        BlockPos chamberPos = drivePos.relative(
-                state.getValue(CloakingCoreBlock.FACING)
-        );
+        Direction facing = state.getValue(CloakingCoreBlock.FACING);
+        BlockPos chamberPos = drivePos.relative(facing);
+        BlockPos farPos = drivePos.relative(facing, 2);
 
         return new AABB(drivePos)
-                .minmax(new AABB(chamberPos));
+                .minmax(new AABB(chamberPos))
+                .minmax(new AABB(farPos));
     }
 }

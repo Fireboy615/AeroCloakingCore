@@ -5,6 +5,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 
 import net.fireboy.aerocloakingcore.client.AlphaSubLevelRenderQueue;
 import net.fireboy.aerocloakingcore.client.EntityOcclusionDepthMask;
+import net.fireboy.aerocloakingcore.client.RopeCloakRenderQueue;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.DeltaTracker;
@@ -107,8 +108,16 @@ public abstract class LevelRendererEntityOcclusionMaskMixin {
             CallbackInfo ci
     ) {
         if (aerocloakingcore$replayingOccludedEntities
-                || !CloakingClient.usesEntityOcclusionMask()
-                || !AlphaSubLevelRenderQueue.hasEntityOcclusionDepth()) {
+                || !CloakingClient.usesEntityOcclusionMask()) {
+            return;
+        }
+
+        boolean hasTerrainDepth =
+                AlphaSubLevelRenderQueue.hasEntityOcclusionDepth();
+        boolean hasRopeDepth =
+                RopeCloakRenderQueue.hasEntityOcclusionDepth();
+
+        if (!hasTerrainDepth && !hasRopeDepth) {
             return;
         }
 

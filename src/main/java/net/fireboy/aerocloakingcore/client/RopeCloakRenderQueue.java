@@ -15,6 +15,7 @@ import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.simulated_team.simulated.content.blocks.rope.RopeStrandHolderBehavior;
+import dev.simulated_team.simulated.content.blocks.rope.strand.client.ClientLevelRopeManager;
 import dev.simulated_team.simulated.content.blocks.rope.strand.client.ClientRopePoint;
 import dev.simulated_team.simulated.content.blocks.rope.strand.client.ClientRopeStrand;
 import dev.simulated_team.simulated.index.SimPartialModels;
@@ -48,8 +49,11 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Direction-independent cloak rendering for Simulated rope strands.
@@ -64,6 +68,7 @@ public final class RopeCloakRenderQueue {
     private static final int BUFFER_SIZE = 262_144;
     private static final double ENDPOINT_QUERY_RADIUS = 2.5;
     private static final int ENDPOINT_HOLDER_SEARCH_RADIUS = 2;
+    private static final double OCCLUSION_LEVEL_DISCOVERY_RADIUS = 1024.0;
 
     /** Exact half-width of Simulated's rope model: 3 pixels wide = 3/16 block. */
     private static final float ROPE_HALF_WIDTH = 3.0F / 32.0F;
@@ -101,15 +106,22 @@ public final class RopeCloakRenderQueue {
     private static final List<DeferredRope> ALPHA_QUEUE = new ArrayList<>();
 
     /**
-     * Physical rope geometry replayed as temporary depth during OCCLUDED_ONLY.
-     * This keeps a rope masking entities even when its colour reaches 0 alpha.
+     * Persistent rope strands used by OCCLUDED_ONLY.
+     *
+     * The visual rope/block-entity renderer is not a reliable lifetime source:
+     * once a ship reaches full cloak that renderer may stop running entirely.
+     * Keeping the actual ClientRopeStrand here means the invisible rope remains
+     * available to the late depth mask for as long as Simulated still owns it.
      */
-    private static final List<DeferredRopeOccluder> ENTITY_OCCLUSION_DEPTH_QUEUE =
-            new ArrayList<>();
+    private static final Map<UUID, TrackedRopeOccluder> ENTITY_OCCLUSION_ROPES =
+            new LinkedHashMap<>();
 
-    /** Avoid registering the same physical client strand twice in one frame. */
-    private static final Set<ClientRopeStrand> ENTITY_OCCLUSION_STRANDS =
+    /** Client levels whose Simulated rope managers we have encountered. */
+    private static final Set<Level> ENTITY_OCCLUSION_LEVELS =
             Collections.newSetFromMap(new IdentityHashMap<>());
+
+    private static Level trackedRootLevel;
+    private static float currentPartialTick;
 
     private static final ThreadLocal<ArrayDeque<BufferSlot>> BUFFER_POOL =
             ThreadLocal.withInitial(ArrayDeque::new);
@@ -117,10 +129,24 @@ public final class RopeCloakRenderQueue {
     private RopeCloakRenderQueue() {
     }
 
-    public static void beginFrame() {
+    public static void beginFrame(float partialTick) {
         ALPHA_QUEUE.clear();
-        ENTITY_OCCLUSION_DEPTH_QUEUE.clear();
-        ENTITY_OCCLUSION_STRANDS.clear();
+        currentPartialTick = partialTick;
+
+        Minecraft minecraft = Minecraft.getInstance();
+        Level rootLevel = minecraft.level;
+
+        if (rootLevel != trackedRootLevel) {
+            ENTITY_OCCLUSION_ROPES.clear();
+            ENTITY_OCCLUSION_LEVELS.clear();
+            trackedRootLevel = rootLevel;
+        }
+
+        if (rootLevel != null) {
+            ENTITY_OCCLUSION_LEVELS.add(rootLevel);
+        }
+
+        refreshEntityOcclusionRopes();
     }
 
     /**
@@ -195,35 +221,105 @@ public final class RopeCloakRenderQueue {
             float partialTick
     ) {
         if (!CloakingClient.usesEntityOcclusionMask()
+                || blockEntity == null
                 || ropeHolder == null
                 || !ropeHolder.ownsRope()) {
             return;
         }
 
+        Level level = blockEntity.getLevel();
         ClientRopeStrand strand = ropeHolder.getClientStrand();
-        if (strand == null || strand.getPoints().size() <= 1) {
+
+        if (level == null || strand == null || strand.getPoints().size() <= 1) {
             return;
         }
 
-        if (ENTITY_OCCLUSION_STRANDS.contains(strand)) {
-            return;
-        }
-
-        EndpointState endpoints = resolveEndpointState(
-                blockEntity,
-                ropeHolder,
-                strand,
-                partialTick
+        currentPartialTick = partialTick;
+        ENTITY_OCCLUSION_LEVELS.add(level);
+        ENTITY_OCCLUSION_ROPES.put(
+                strand.getUuid(),
+                new TrackedRopeOccluder(level, strand)
         );
+    }
 
-        if (endpoints == null || endpoints.maxStrength() <= 0.001F) {
+    /**
+     * Refreshes the persistent registry from Simulated's real rope managers.
+     * A strand therefore stays registered even on frames where its holder block
+     * entity is fully cloaked and never reaches its visual renderer. Destroyed
+     * ropes disappear as soon as their manager no longer contains them.
+     */
+    private static void refreshEntityOcclusionRopes() {
+        if (!CloakingClient.usesEntityOcclusionMask()) {
+            ENTITY_OCCLUSION_ROPES.clear();
             return;
         }
 
-        ENTITY_OCCLUSION_STRANDS.add(strand);
-        ENTITY_OCCLUSION_DEPTH_QUEUE.add(
-                new DeferredRopeOccluder(ropeHolder, partialTick)
-        );
+        Map<UUID, TrackedRopeOccluder> live = new LinkedHashMap<>();
+
+        /*
+         * Discover nearby client sublevel Levels directly from Sable instead
+         * of waiting for one of their block entities to render. This covers
+         * joining a world while a ship/rope is already 100% cloaked.
+         */
+        Minecraft minecraft = Minecraft.getInstance();
+        Level rootLevel = minecraft.level;
+        if (rootLevel != null) {
+            Vec3 camera = minecraft.gameRenderer.getMainCamera().getPosition();
+            double radius = OCCLUSION_LEVEL_DISCOVERY_RADIUS;
+            AABB query = new AABB(
+                    camera.x - radius,
+                    camera.y - radius,
+                    camera.z - radius,
+                    camera.x + radius,
+                    camera.y + radius,
+                    camera.z + radius
+            );
+
+            for (SubLevel subLevel : Sable.HELPER.getAllIntersecting(
+                    rootLevel,
+                    new BoundingBox3d(query)
+            )) {
+                if (subLevel instanceof ClientSubLevel clientSubLevel
+                        && !clientSubLevel.isRemoved()) {
+                    ENTITY_OCCLUSION_LEVELS.add(clientSubLevel.getLevel());
+                }
+            }
+        }
+
+        for (Level level : new ArrayList<>(ENTITY_OCCLUSION_LEVELS)) {
+            if (level == null) {
+                continue;
+            }
+
+            ClientLevelRopeManager manager = ClientLevelRopeManager.getOrCreate(level);
+            for (ClientRopeStrand strand : manager.getAllStrands()) {
+                if (strand == null || strand.getPoints().size() <= 1) {
+                    continue;
+                }
+
+                live.put(
+                        strand.getUuid(),
+                        new TrackedRopeOccluder(level, strand)
+                );
+            }
+        }
+
+        // Preserve a strand discovered directly from a holder this frame even
+        // if Simulated has not exposed it through the manager iterator yet.
+        for (Map.Entry<UUID, TrackedRopeOccluder> entry
+                : ENTITY_OCCLUSION_ROPES.entrySet()) {
+            TrackedRopeOccluder tracked = entry.getValue();
+            ClientRopeStrand managerStrand =
+                    ClientLevelRopeManager.getOrCreate(tracked.level())
+                            .getStrand(entry.getKey());
+
+            if (managerStrand == tracked.strand()) {
+                live.putIfAbsent(entry.getKey(), tracked);
+            }
+        }
+
+        ENTITY_OCCLUSION_ROPES.clear();
+        ENTITY_OCCLUSION_ROPES.putAll(live);
     }
 
     public static void renderQueued() {
@@ -251,7 +347,8 @@ public final class RopeCloakRenderQueue {
     }
 
     public static boolean hasEntityOcclusionDepth() {
-        return !ENTITY_OCCLUSION_DEPTH_QUEUE.isEmpty();
+        refreshEntityOcclusionRopes();
+        return !ENTITY_OCCLUSION_ROPES.isEmpty();
     }
 
     /**
@@ -262,7 +359,8 @@ public final class RopeCloakRenderQueue {
      * even when its colour is completely invisible.</p>
      */
     public static void renderEntityOcclusionDepthPrepass() {
-        if (ENTITY_OCCLUSION_DEPTH_QUEUE.isEmpty()) {
+        refreshEntityOcclusionRopes();
+        if (ENTITY_OCCLUSION_ROPES.isEmpty()) {
             return;
         }
 
@@ -273,14 +371,14 @@ public final class RopeCloakRenderQueue {
         try {
             VertexConsumer consumer = slot.source.getBuffer(ENTITY_OCCLUSION_DEPTH_TYPE);
 
-            for (DeferredRopeOccluder rope : ENTITY_OCCLUSION_DEPTH_QUEUE) {
-                ClientRopeStrand strand = rope.ropeHolder().getClientStrand();
+            for (TrackedRopeOccluder rope : ENTITY_OCCLUSION_ROPES.values()) {
+                ClientRopeStrand strand = rope.strand();
                 if (strand == null || strand.getPoints().size() <= 1) {
                     continue;
                 }
 
                 ObjectArrayList<RopeRenderPoint> points = buildRenderPoints(
-                        rope.partialTick(),
+                        currentPartialTick,
                         strand.getPoints()
                 );
 
@@ -1151,9 +1249,9 @@ public final class RopeCloakRenderQueue {
                 MultiBufferSource.immediate(backing);
     }
 
-    private record DeferredRopeOccluder(
-            RopeStrandHolderBehavior ropeHolder,
-            float partialTick
+    private record TrackedRopeOccluder(
+            Level level,
+            ClientRopeStrand strand
     ) {
     }
 

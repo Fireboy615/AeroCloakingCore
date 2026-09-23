@@ -5,10 +5,8 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import net.fireboy.aerocloakingcore.client.EntityCloakRenderState;
 
 import net.minecraft.client.renderer.RenderType;
-import net.minecraft.client.renderer.ShaderInstance;
 
 import org.lwjgl.opengl.GL11C;
-import org.lwjgl.opengl.GL20C;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -18,12 +16,16 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 
 /**
- * Applies the alpha component of the active cloak state.
+ * Applies the alpha component of the active cloak state around RenderType
+ * BufferUploader draws.
  *
- * Normal entity/block-entity ALPHA rendering still behaves exactly as before.
- * Rope segments may additionally combine this alpha multiplier with dither so
- * a strand can transition continuously from a DITHER endpoint to an ALPHA
- * endpoint without forcing the entire rope into one render technique.
+ * <p>Dither uniforms are deliberately <strong>not</strong> written here.
+ * BufferUploader ultimately calls VertexBuffer#_drawWithShader, and that method
+ * binds the ShaderInstance immediately before the draw and clears it immediately
+ * afterward. Writing a GL uniform on either side of BufferUploader therefore
+ * races the program bind and can hit GL_CURRENT_PROGRAM == 0. The companion
+ * VertexBufferEntityDitherMixin owns the dither uniform at the only safe point:
+ * directly after ShaderInstance#apply and before ShaderInstance#clear.</p>
  */
 @Mixin(RenderType.class)
 public abstract class RenderTypeEntityCloakMixin {
@@ -33,15 +35,6 @@ public abstract class RenderTypeEntityCloakMixin {
 
     @Unique
     private boolean aerocloakingcore$blendWasEnabled;
-
-    /**
-     * BufferUploader-backed RenderTypes (including Simulated rope buffers) do
-     * not pass through VertexBufferEntityDitherMixin. Track the shader uniform
-     * here so rope/block-entity dither state is applied and then cleared around
-     * the actual draw.
-     */
-    @Unique
-    private int aerocloakingcore$bufferDitherUniformLocation = -1;
 
     @Unique
     private float aerocloakingcore$oldRed;
@@ -69,44 +62,12 @@ public abstract class RenderTypeEntityCloakMixin {
     ) {
 
         aerocloakingcore$modifiedEntityAlphaState = false;
-        aerocloakingcore$bufferDitherUniformLocation = -1;
 
         /*
-         * RenderType.draw() uses BufferUploader, not VertexBuffer, so the
-         * normal VertexBufferEntityDitherMixin never sees rope geometry. The
-         * shader is already bound at this injection point; apply the active
-         * dither strength directly and always clear it after the draw.
-         *
-         * This is especially important for OCCLUDED_ONLY. At 100% ship cloak,
-         * a solid/cutout shader may otherwise still contain a cloak strength of
-         * 1 and discard every fragment of the rope's depth replay. That is the
-         * exact 99% -> 100% pop where an entity suddenly became visible through
-         * an invisible rope.
-         */
-        ShaderInstance shader = RenderSystem.getShader();
-        if (shader != null && EntityCloakRenderState.isActive()) {
-            int program = shader.getId();
-            if (program != 0) {
-                aerocloakingcore$bufferDitherUniformLocation =
-                        GL20C.glGetUniformLocation(program, "AeroCloakStrength");
-
-                if (aerocloakingcore$bufferDitherUniformLocation >= 0) {
-                    float ditherStrength = EntityCloakRenderState.isDepthOnly()
-                            ? 0.0F
-                            : EntityCloakRenderState.getDitherStrength();
-                    GL20C.glUniform1f(
-                            aerocloakingcore$bufferDitherUniformLocation,
-                            ditherStrength
-                    );
-                }
-            }
-        }
-
-        /*
-         * Depth-only rope replays now use a dedicated RenderType whose
-         * write-mask state is DEPTH_WRITE. Do not mutate the GL colour/depth
-         * masks here; this mixin only clears AeroCloakStrength so the solid
-         * shader cannot discard the physical rope fragments.
+         * Depth-only rope/entity replays use a dedicated DEPTH_WRITE RenderType.
+         * The VertexBuffer mixin explicitly forces AeroCloakStrength to zero for
+         * these draws after the shader is actually bound, so no GL shader work is
+         * needed here.
          */
         if (EntityCloakRenderState.isDepthOnly()) {
             return;
@@ -155,14 +116,6 @@ public abstract class RenderTypeEntityCloakMixin {
     private void aerocloakingcore$afterEntityCloakDraw(
             CallbackInfo ci
     ) {
-
-        if (aerocloakingcore$bufferDitherUniformLocation >= 0) {
-            GL20C.glUniform1f(
-                    aerocloakingcore$bufferDitherUniformLocation,
-                    0.0F
-            );
-            aerocloakingcore$bufferDitherUniformLocation = -1;
-        }
 
         if (!aerocloakingcore$modifiedEntityAlphaState) {
             return;
