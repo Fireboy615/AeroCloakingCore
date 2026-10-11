@@ -12,7 +12,6 @@ import net.fireboy.aerocloakingcore.block.ModBlocks;
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.cloak.CloakingCoreSettings;
 import net.fireboy.aerocloakingcore.cloak.CloakingManager;
-import net.fireboy.aerocloakingcore.cloak.LinearBearingCloakCompat;
 import net.fireboy.aerocloakingcore.menu.CloakingCoreMenu;
 import net.fireboy.aerocloakingcore.redstone.CloakingReceivingLink;
 
@@ -1069,13 +1068,6 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
                 }
             }
         }
-
-        // Position-based, non-parental membership for independent Linear Bearing
-        // sublevels. This is recalculated on every scan so sliding outside the
-        // ship's bounds immediately removes both cloak and capacity cost.
-        LinearBearingCloakCompat.includeInsideBoundingBox(
-                root, result, CloakingCoreBlockEntity::countSubLevelBlocks
-        );
 
         return result;
     }

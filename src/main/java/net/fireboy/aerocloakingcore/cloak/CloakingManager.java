@@ -4,6 +4,10 @@ import net.fireboy.aerocloakingcore.AeroCloakingCore;
 import net.fireboy.aerocloakingcore.block.entity.CloakingCoreBlockEntity;
 import net.fireboy.aerocloakingcore.network.CloakingSyncPayload;
 
+import dev.ryanhcode.sable.Sable;
+import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
+import dev.ryanhcode.sable.sublevel.SubLevel;
+
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
 
@@ -57,6 +61,8 @@ public final class CloakingManager {
     private static final Map<CloakingCoreBlockEntity, Long> SETTINGS_REVISIONS =
             new IdentityHashMap<>();
     private static long settingsRevisionCounter = 0L;
+    /** Spatial broad-phase now runs once per server tick per cloak system.
+     * Candidate geometry is cached and rescanned adaptively as it moves. */
 
     private CloakingManager() {
     }
@@ -160,6 +166,10 @@ public final class CloakingManager {
             return;
         }
 
+        // Preserve the player's new pair even if registering this Core causes
+        // an older system to be rebuilt before we can propagate the edit.
+        ItemStack chosenFirst = source.getLinkFrequency(true);
+        ItemStack chosenSecond = source.getLinkFrequency(false);
         SETTINGS_REVISIONS.put(source, ++settingsRevisionCounter);
         if (!REGISTRATIONS.containsKey(source)) {
             REGISTRATIONS.put(
@@ -178,8 +188,8 @@ public final class CloakingManager {
             return;
         }
 
-        system.linkFrequencyFirst = source.getLinkFrequency(true);
-        system.linkFrequencySecond = source.getLinkFrequency(false);
+        system.linkFrequencyFirst = chosenFirst;
+        system.linkFrequencySecond = chosenSecond;
         for (CloakingCoreBlockEntity member : system.cores) {
             if (isLive(member)) {
                 member.applySystemLinkFrequenciesFromManager(
@@ -243,6 +253,14 @@ public final class CloakingManager {
         pruneDeadRegistrations();
 
         boolean hadSystems = !SYSTEMS.isEmpty();
+        Map<UUID, CloakSystem> previousSystems = new HashMap<>(SYSTEMS);
+        // Prefer a Core that already belonged to an existing group when a
+        // brand-new Core joins with no user edit history of its own.
+        Set<CloakingCoreBlockEntity> previouslyGrouped =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        for (CloakSystem previous : SYSTEMS.values()) {
+            previouslyGrouped.addAll(previous.cores);
+        }
         SYSTEMS.clear();
         SUBLEVEL_TO_SYSTEM.clear();
 
@@ -310,6 +328,17 @@ public final class CloakingManager {
             system.memberBlockCounts.putAll(memberBlockCounts);
             system.cores.addAll(cores);
 
+            // Rebuilding a Core group should not momentarily remove every
+            // spatially enclosed child and restart its fade animation.
+            // Reuse spatial state only if the physical connected membership
+            // of the system has stayed the same.
+            CloakSystem previous = previousSystems.get(systemId);
+            if (previous != null
+                    && previous.memberBlockCounts.keySet().equals(memberBlockCounts.keySet())) {
+                system.spatialIntersections = previous.spatialIntersections;
+                system.spatialScanCache = previous.spatialScanCache;
+            }
+
             // Settings are already mirrored within an existing group. For a
             // newly merged group choose deterministically, then mirror that one
             // value to every core so subsequent rebuilds remain stable.
@@ -322,9 +351,15 @@ public final class CloakingManager {
                                 b.getKey(), 0L
                         );
                         int revisionCompare = Long.compare(revisionB, revisionA);
-                        return revisionCompare != 0
-                                ? revisionCompare
-                                : compareRegistrations(a, b);
+                        if (revisionCompare != 0) {
+                            return revisionCompare;
+                        }
+                        boolean aExisting = previouslyGrouped.contains(a.getKey());
+                        boolean bExisting = previouslyGrouped.contains(b.getKey());
+                        if (aExisting != bExisting) {
+                            return aExisting ? -1 : 1;
+                        }
+                        return compareRegistrations(a, b);
                     })
                     .map(Map.Entry::getKey)
                     .findFirst()
@@ -388,6 +423,68 @@ public final class CloakingManager {
     // SYSTEM CALCULATION
     // ---------------------------------------------------------------------
 
+    /**
+     * Discover physical overlap without introducing Sable connectivity or
+     * merging the controls of two independently powered cloaking systems.
+     *
+     * The regular per-Core graph scan stays at 20 ticks. Spatial broad-phase
+     * checks every tick; the costly voxel phase is reused or evaluated at an
+     * adaptive rate. Every Core in the system shares this scan/cache.
+     */
+    private static boolean refreshSpatialIntersections(CloakSystem system) {
+        if (system.cores.isEmpty()) {
+            return false;
+        }
+
+        CloakingCoreBlockEntity source = system.cores.iterator().next();
+        long tick = source.getLevel().getGameTime();
+        if (system.lastSpatialScanTick == tick) {
+            return false;
+        }
+        system.lastSpatialScanTick = tick;
+
+        // Keep containment membership even when the cloak strength is zero.
+        // Otherwise a ship that fades from 0% to 100% discovers its enclosed
+        // children partway through the parent's transition. The client then
+        // gives them late entrance fades, which makes the silhouettes pop.
+        // Likewise, fading back to 0% must not detach an enclosed child.
+        Map<UUID, SpatialCloakField.Intersection> hits = Map.of();
+        SubLevel root = Sable.HELPER.getContaining(source);
+        if (root != null && !root.isRemoved()) {
+                SubLevelContainer container =
+                        SubLevelContainer.getContainer(root.getLevel());
+                List<SubLevel> hosts = new ArrayList<>();
+                for (UUID memberId : system.memberBlockCounts.keySet()) {
+                    SubLevel member = container != null
+                            ? container.getSubLevel(memberId) : null;
+                    if (member == null && memberId.equals(root.getUniqueId())) {
+                        member = root;
+                    }
+                    if (member != null && !member.isRemoved()) {
+                        hosts.add(member);
+                    }
+                }
+                var profiler = source.getLevel().getProfiler();
+                profiler.push("aero_spatial_field_scan");
+                try {
+                    hits = SpatialCloakField.scan(
+                            hosts,
+                            system.memberBlockCounts.keySet(),
+                            system.spatialScanCache,
+                            tick
+                    );
+                } finally {
+                    profiler.pop();
+                }
+        }
+
+        if (hits.equals(system.spatialIntersections)) {
+            return false;
+        }
+        system.spatialIntersections = Map.copyOf(hits);
+        return true;
+    }
+
     private static void recompute(CloakSystem system, boolean syncOnChange) {
         system.cores.removeIf(core -> !isLive(core));
 
@@ -408,9 +505,16 @@ public final class CloakingManager {
                     .normalized();
         }
 
+        // Spatially intersecting sublevels contribute load, but NEVER become
+        // connection-graph members; they cannot merge Core settings or links.
+        boolean spatialChanged = refreshSpatialIntersections(system);
         long blockCountLong = 0L;
         for (int count : system.memberBlockCounts.values()) {
             blockCountLong += Math.max(0, count);
+        }
+        for (SpatialCloakField.Intersection intersection
+                : system.spatialIntersections.values()) {
+            blockCountLong += Math.max(0, intersection.load());
         }
         int blockCount = (int) Math.min(Integer.MAX_VALUE, blockCountLong);
 
@@ -521,8 +625,8 @@ public final class CloakingManager {
                 ? system.settings
                 : system.settings.withCloakStrength(0.0F);
 
-        boolean publishedChanged =
-                !effectiveSettings.equals(system.publishedSettings)
+        boolean publishedChanged = spatialChanged
+                || !effectiveSettings.equals(system.publishedSettings)
                         || blockCount != system.publishedBlockCount
                         || Math.abs(
                                 transitionDuration
@@ -638,6 +742,9 @@ public final class CloakingManager {
         CloakingServerSettings serverSettings = CloakingServerSettings.fromConfig();
         List<CloakingSyncPayload.Entry> entries = new ArrayList<>();
 
+        // Explicit Sable connection members always keep their own Core
+        // system's settings. Independent spatial capture never overrides a
+        // sublevel with a separate Cloaking Core.
         for (CloakSystem system : SYSTEMS.values()) {
             if (system.publishedSettings == null) {
                 continue;
@@ -653,7 +760,35 @@ public final class CloakingManager {
                         system.systemId,
                         syncedSettings,
                         system.publishedTransitionDurationSeconds,
-                        system.publishedFullyCloakedDistance
+                        system.publishedFullyCloakedDistance,
+                        false
+                ));
+            }
+        }
+
+        // Full containment (or the Linear Bearing exception) grants cloak
+        // inheritance, but never Core control, kinetic capacity or linking.
+        // Choose one field deterministically if fields overlap.
+        Set<UUID> assigned = new LinkedHashSet<>(SUBLEVEL_TO_SYSTEM.keySet());
+        for (CloakSystem system : SYSTEMS.values()) {
+            if (system.publishedSettings == null) {
+                continue;
+            }
+            CloakingCoreSettings syncedSettings = serverSettings.modEnabled()
+                    ? system.publishedSettings
+                    : system.publishedSettings.withCloakStrength(0.0F);
+            for (Map.Entry<UUID, SpatialCloakField.Intersection> hit
+                    : system.spatialIntersections.entrySet()) {
+                if (!hit.getValue().contained() || !assigned.add(hit.getKey())) {
+                    continue;
+                }
+                entries.add(new CloakingSyncPayload.Entry(
+                        hit.getKey(),
+                        system.systemId,
+                        syncedSettings,
+                        system.publishedTransitionDurationSeconds,
+                        system.publishedFullyCloakedDistance,
+                        true
                 ));
             }
         }
@@ -679,9 +814,20 @@ public final class CloakingManager {
         }
 
         CloakSystem system = systemForSubLevel(subLevelId);
-        return system != null
-                && system.publishedSettings != null
-                && system.publishedSettings.cloakStrength() > 0.0F;
+        if (system != null) {
+            return system.publishedSettings != null
+                    && system.publishedSettings.cloakStrength() > 0.0F;
+        }
+        for (CloakSystem host : SYSTEMS.values()) {
+            SpatialCloakField.Intersection hit =
+                    host.spatialIntersections.get(subLevelId);
+            if (hit != null && hit.contained()
+                    && host.publishedSettings != null
+                    && host.publishedSettings.cloakStrength() > 0.0F) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static Map<UUID, CloakingCoreSettings> getCloakedSubLevels() {
@@ -700,6 +846,17 @@ public final class CloakingManager {
                 result.put(memberId, system.publishedSettings);
             }
         }
+        for (CloakSystem system : SYSTEMS.values()) {
+            if (system.publishedSettings == null) {
+                continue;
+            }
+            for (Map.Entry<UUID, SpatialCloakField.Intersection> hit
+                    : system.spatialIntersections.entrySet()) {
+                if (hit.getValue().contained()) {
+                    result.putIfAbsent(hit.getKey(), system.publishedSettings);
+                }
+            }
+        }
 
         return Collections.unmodifiableMap(result);
     }
@@ -711,6 +868,7 @@ public final class CloakingManager {
         REGISTRATIONS.clear();
         SETTINGS_REVISIONS.clear();
         settingsRevisionCounter = 0L;
+        SpatialCloakField.clear();
 
         if (hadSystems) {
             sync();
@@ -738,6 +896,11 @@ public final class CloakingManager {
         private final UUID systemId;
         private final Set<CloakingCoreBlockEntity> cores = new LinkedHashSet<>();
         private final Map<UUID, Integer> memberBlockCounts = new LinkedHashMap<>();
+        /** Additional load and optional inheritance, never graph membership. */
+        private Map<UUID, SpatialCloakField.Intersection> spatialIntersections = Map.of();
+        private SpatialCloakField.ScanCache spatialScanCache =
+                new SpatialCloakField.ScanCache();
+        private long lastSpatialScanTick = Long.MIN_VALUE;
 
         private CloakingCoreSettings settings;
         private CloakingCoreSettings publishedSettings;

@@ -55,8 +55,12 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
     private boolean cloakRopeConnectedSubLevels;
 
     private ValueSlider strengthSlider;
+    private CycleButton<CloakRenderMode> renderModeButton;
+    private CycleButton<Boolean> connectedSublevelsButton;
+    private CycleButton<Boolean> ropeConnectedSublevelsButton;
     private boolean draggingStrengthSlider;
     private long ignoreServerStrengthUntilNanos;
+    private long ignoreServerControlsUntilNanos;
 
     public CloakingCoreScreen(
             CloakingCoreMenu menu,
@@ -100,7 +104,7 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
         );
         addRenderableWidget(strengthSlider);
 
-        addRenderableWidget(
+        renderModeButton = addRenderableWidget(
                 CycleButton.<CloakRenderMode>builder(CloakingCoreScreen::renderModeName)
                         .withValues(CloakRenderMode.values())
                         .withInitialValue(renderMode)
@@ -112,12 +116,14 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                                 Component.literal("Render Mode"),
                                 (button, value) -> {
                                     renderMode = value;
+                                    ignoreServerControlsUntilNanos =
+                                            System.nanoTime() + LOCAL_EDIT_GRACE_NANOS;
                                     sendSettings(false);
                                 }
                         )
         );
 
-        addRenderableWidget(
+        connectedSublevelsButton = addRenderableWidget(
                 CycleButton.<Boolean>builder(
                                 value -> Component.literal(value ? "On" : "Off")
                         )
@@ -131,12 +137,14 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                                 Component.literal("Attached"),
                                 (button, value) -> {
                                     cloakConnectedSubLevels = value;
+                                    ignoreServerControlsUntilNanos =
+                                            System.nanoTime() + LOCAL_EDIT_GRACE_NANOS;
                                     sendSettings(false);
                                 }
                         )
         );
 
-        addRenderableWidget(
+        ropeConnectedSublevelsButton = addRenderableWidget(
                 CycleButton.<Boolean>builder(
                                 value -> Component.literal(value ? "On" : "Off")
                         )
@@ -150,6 +158,8 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
                                 Component.literal("Ropes"),
                                 (button, value) -> {
                                     cloakRopeConnectedSubLevels = value;
+                                    ignoreServerControlsUntilNanos =
+                                            System.nanoTime() + LOCAL_EDIT_GRACE_NANOS;
                                     sendSettings(false);
                                 }
                         )
@@ -159,6 +169,30 @@ public class CloakingCoreScreen extends AbstractContainerScreen<CloakingCoreMenu
     @Override
     protected void containerTick() {
         super.containerTick();
+
+        // Settings are owned by the cloak system. Keep all existing open
+        // menus synchronized when another Core/player changes the settings.
+        // setValue() refreshes the CycleButton label without its click handler.
+        if (menu.hasServerStats()
+                && System.nanoTime() >= ignoreServerControlsUntilNanos) {
+            CloakRenderMode serverMode = menu.getServerRenderMode();
+            if (renderModeButton != null && renderMode != serverMode) {
+                renderMode = serverMode;
+                renderModeButton.setValue(serverMode);
+            }
+            boolean serverConnected = menu.getServerConnectedSubLevels();
+            if (connectedSublevelsButton != null
+                    && cloakConnectedSubLevels != serverConnected) {
+                cloakConnectedSubLevels = serverConnected;
+                connectedSublevelsButton.setValue(serverConnected);
+            }
+            boolean serverRopes = menu.getServerRopeConnectedSubLevels();
+            if (ropeConnectedSublevelsButton != null
+                    && cloakRopeConnectedSubLevels != serverRopes) {
+                cloakRopeConnectedSubLevels = serverRopes;
+                ropeConnectedSublevelsButton.setValue(serverRopes);
+            }
+        }
 
         if (draggingStrengthSlider
                 || strengthSlider == null

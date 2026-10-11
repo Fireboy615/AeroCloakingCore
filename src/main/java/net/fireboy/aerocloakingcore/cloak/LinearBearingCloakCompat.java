@@ -40,6 +40,8 @@ public final class LinearBearingCloakCompat {
             "mechanical_linear_moving"
     };
 
+    private static Set<Block> cachedBearingBlocks;
+
     private LinearBearingCloakCompat() {
     }
 
@@ -72,14 +74,37 @@ public final class LinearBearingCloakCompat {
         }
     }
 
+    /**
+     * Explicit exception for moving Linear Bearing carriages. Use this from
+     * spatial cloak scanning rather than adding it to the physical Sable graph:
+     * spatially captured ships must not merge separate Core networks.
+     */
+    public static boolean hasBearingInside(
+            SubLevel candidate,
+            BoundingBox3dc hostBounds
+    ) {
+        if (!ModList.get().isLoaded("linearbearing")
+                || candidate == null || candidate.isRemoved()) {
+            return false;
+        }
+        Set<Block> blocks = resolveBearingBlocks();
+        return !blocks.isEmpty() && hasBearingInside(candidate, hostBounds, blocks);
+    }
+
     private static Set<Block> resolveBearingBlocks() {
+        if (cachedBearingBlocks != null) {
+            return cachedBearingBlocks;
+        }
         Set<Block> blocks = new HashSet<>();
         for (String name : BEARING_BLOCK_NAMES) {
             BuiltInRegistries.BLOCK.getOptional(
                     ResourceLocation.fromNamespaceAndPath("linearbearing", name)
             ).filter(block -> block != Blocks.AIR).ifPresent(blocks::add);
         }
-        return blocks;
+        // Block registries are fixed after mod loading, so resolving them on
+        // every near-field scan just adds avoidable registry lookups.
+        cachedBearingBlocks = Set.copyOf(blocks);
+        return cachedBearingBlocks;
     }
 
     private static boolean hasBearingInside(

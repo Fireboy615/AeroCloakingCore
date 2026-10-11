@@ -147,6 +147,18 @@ public final class CloakingClient {
             new ConcurrentHashMap<>();
 
     /**
+     * Spatially enclosed sublevels borrow the actual cloak progress of their
+     * owning system's stable connected member. They must not run independent
+     * fade timers while the parent changes strength or they visibly lag.
+     */
+    private static final Map<UUID, UUID> SPATIAL_FADE_SOURCES =
+            new ConcurrentHashMap<>();
+
+    /** Small one-off entrance fade when cargo enters an already cloaked ship. */
+    private static final Map<UUID, CloakTransition> SPATIAL_ENTRY_FADES =
+            new ConcurrentHashMap<>();
+
+    /**
      * Client rendering repeatedly asks for the same sublevel's viewer strength
      * (terrain layers, depth masks, BERs, particles, Flywheel). The full
      * calculation includes Sable ownership lookups and group/shape distance
@@ -202,8 +214,10 @@ public final class CloakingClient {
         known.addAll(CORE_SETTINGS.keySet());
         known.addAll(TRANSITION_DURATIONS.keySet());
         known.addAll(FULLY_CLOAKED_DISTANCES.keySet());
+        boolean initialSnapshot = known.isEmpty();
 
         Map<UUID, Set<UUID>> incomingGroups = new ConcurrentHashMap<>();
+        Map<UUID, UUID> incomingSpatialSources = new HashMap<>();
 
         for (CloakingSyncPayload.Entry entry : entries) {
             UUID id = entry.subLevelId();
@@ -227,7 +241,47 @@ public final class CloakingClient {
                     Math.max(0.0, entry.fullyCloakedDistance())
             );
 
-            setTargetStrength(id, settings.cloakStrength());
+            if (entry.spatiallyInherited()) {
+                incomingSpatialSources.put(id, groupId);
+            } else {
+                // Ordinary connected members remain independently targetable,
+                // while spatial cargo follows the common group fade below.
+                SPATIAL_FADE_SOURCES.remove(id);
+                SPATIAL_ENTRY_FADES.remove(id);
+                setTargetStrength(id, settings.cloakStrength());
+            }
+        }
+
+        // Process all connected entries first, so the spatial children can
+        // reference the up-to-date transition of their host group member.
+        long entryNow = System.nanoTime();
+        for (Map.Entry<UUID, UUID> spatial : incomingSpatialSources.entrySet()) {
+            UUID id = spatial.getKey();
+            UUID source = spatial.getValue();
+            UUID oldSource = SPATIAL_FADE_SOURCES.get(id);
+            if (!source.equals(oldSource)) {
+                float sourceStrength = getCloakStrength(source);
+                float previousStrength = getCloakStrength(id);
+                CloakTransition sourceFade = TRANSITIONS.get(source);
+                boolean parentStillFading = sourceFade != null
+                        && !sourceFade.isFinished(entryNow);
+                if (!initialSnapshot && !parentStillFading
+                        && sourceStrength > 0.05F) {
+                    // Only cargo entering an ALREADY stable cloak needs a
+                    // short local entrance fade. A child discovered during the
+                    // parent's own fade must instead match it exactly.
+                    float start = clamp(previousStrength / sourceStrength);
+                    SPATIAL_ENTRY_FADES.put(id, new CloakTransition(
+                            start, 1.0F, entryNow,
+                            Math.min(getTransitionDurationSeconds(id), 0.6F),
+                            getTransitionEasing(id)
+                    ));
+                } else {
+                    SPATIAL_ENTRY_FADES.remove(id);
+                }
+                TRANSITIONS.remove(id);
+            }
+            SPATIAL_FADE_SOURCES.put(id, source);
         }
 
         /*
@@ -240,7 +294,26 @@ public final class CloakingClient {
          */
         for (UUID id : known) {
             if (!incoming.contains(id)) {
-                setTargetStrength(id, 0.0F);
+                UUID source = SPATIAL_FADE_SOURCES.get(id);
+                if (source != null) {
+                    // Preserve the last *displayed* parent-matched strength
+                    // before detaching. Only the departing child fades out;
+                    // the parent must never be told to decloak.
+                    float current = getCloakStrength(id);
+                    SPATIAL_FADE_SOURCES.remove(id);
+                    SPATIAL_ENTRY_FADES.remove(id);
+                    if (current > 0.001F) {
+                        TRANSITIONS.put(id, new CloakTransition(
+                                current, 0.0F, System.nanoTime(),
+                                getTransitionDurationSeconds(id),
+                                getTransitionEasing(id)
+                        ));
+                    } else {
+                        TRANSITIONS.remove(id);
+                    }
+                } else {
+                    setTargetStrength(id, 0.0F);
+                }
                 if (getCloakStrength(id) > 0.001F) {
                     UUID leavingGroup = GROUP_IDS.getOrDefault(id, id);
                     incomingGroups.computeIfAbsent(
@@ -277,7 +350,8 @@ public final class CloakingClient {
                                 id,
                                 CloakingCoreSettings.DEFAULT.withCloakStrength(1.0F),
                                 SERVER_SETTINGS.transitionDurationSeconds(),
-                                defaultFullyCloakedDistance()
+                                defaultFullyCloakedDistance(),
+                                false
                         ))
                         .toList(),
                 SERVER_SETTINGS
@@ -323,6 +397,23 @@ public final class CloakingClient {
     public static float getCloakStrength(UUID subLevelId) {
         if (!isModEnabled()) {
             return 0.0F;
+        }
+
+        UUID fadeSource = SPATIAL_FADE_SOURCES.get(subLevelId);
+        if (fadeSource != null && !fadeSource.equals(subLevelId)) {
+            // Deliberately resolve the ordinary (connected) source's timer
+            // instead of starting a separate animation for each nested ship.
+            float sharedStrength = getCloakStrength(fadeSource);
+            CloakTransition entrance = SPATIAL_ENTRY_FADES.get(subLevelId);
+            if (entrance != null) {
+                long now = System.nanoTime();
+                float factor = entrance.getStrength(now);
+                if (entrance.isFinished(now)) {
+                    SPATIAL_ENTRY_FADES.remove(subLevelId, entrance);
+                }
+                return clamp(sharedStrength * factor);
+            }
+            return sharedStrength;
         }
 
         CloakTransition transition = TRANSITIONS.get(subLevelId);

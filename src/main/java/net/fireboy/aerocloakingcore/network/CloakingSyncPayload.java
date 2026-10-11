@@ -22,7 +22,8 @@ public record CloakingSyncPayload(
             UUID groupId,
             CloakingCoreSettings settings,
             float transitionDurationSeconds,
-            double fullyCloakedDistance
+            double fullyCloakedDistance,
+            boolean spatiallyInherited
     ) {
         public void write(RegistryFriendlyByteBuf buffer) {
             buffer.writeUUID(subLevelId);
@@ -30,6 +31,7 @@ public record CloakingSyncPayload(
             settings.write(buffer);
             buffer.writeFloat(transitionDurationSeconds);
             buffer.writeDouble(fullyCloakedDistance);
+            buffer.writeBoolean(spatiallyInherited);
         }
 
         public static Entry read(RegistryFriendlyByteBuf buffer) {
@@ -38,7 +40,8 @@ public record CloakingSyncPayload(
                     buffer.readUUID(),
                     CloakingCoreSettings.read(buffer),
                     buffer.readFloat(),
-                    buffer.readDouble()
+                    buffer.readDouble(),
+                    buffer.readBoolean()
             );
         }
     }
