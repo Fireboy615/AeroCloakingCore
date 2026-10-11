@@ -8,6 +8,7 @@ import net.fireboy.aerocloakingcore.client.FlywheelLateRenderContext;
 
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.LevelRenderer;
@@ -116,6 +117,8 @@ public abstract class FlywheelLevelRendererAlphaMixin {
             return;
         }
 
+        var profiler = Minecraft.getInstance().getProfiler();
+        profiler.push("aero_flywheel_alpha");
         FlywheelAlphaRenderState.setLateAlphaPass(true);
         try {
             // onStartLevelRender has already prepared this frame. Invoke the
@@ -124,6 +127,7 @@ public abstract class FlywheelLevelRendererAlphaMixin {
             accessor.aerocloakingcore$renderPreparedFrame(context);
         } finally {
             FlywheelAlphaRenderState.setLateAlphaPass(false);
+            profiler.pop();
         }
     }
 }

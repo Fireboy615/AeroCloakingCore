@@ -1,0 +1,94 @@
+{
+  "type": "create:sequenced_assembly",
+  "ingredient": {
+    "item": "minecraft:spyglass"
+  },
+  "transitional_item": {
+    "id": "aerocloakingcore:incomplete_sublevel_scanner"
+  },
+  "loops": 2,
+  "sequence": [
+    {
+      "type": "create:deploying",
+      "ingredients": [
+        {
+          "item": "aerocloakingcore:incomplete_sublevel_scanner"
+        },
+        {
+          "item": "minecraft:echo_shard"
+        }
+      ],
+      "results": [
+        {
+          "id": "aerocloakingcore:incomplete_sublevel_scanner"
+        }
+      ]
+    },
+    {
+      "type": "create:deploying",
+      "ingredients": [
+        {
+          "item": "aerocloakingcore:incomplete_sublevel_scanner"
+        },
+        {
+          "item": "create:electron_tube"
+        }
+      ],
+      "results": [
+        {
+          "id": "aerocloakingcore:incomplete_sublevel_scanner"
+        }
+      ]
+    },
+    {
+      "type": "create:deploying",
+      "ingredients": [
+        {
+          "item": "aerocloakingcore:incomplete_sublevel_scanner"
+        },
+        {
+          "item": "create:precision_mechanism"
+        }
+      ],
+      "results": [
+        {
+          "id": "aerocloakingcore:incomplete_sublevel_scanner"
+        }
+      ]
+    },
+    {
+      "type": "create:deploying",
+      "ingredients": [
+        {
+          "item": "aerocloakingcore:incomplete_sublevel_scanner"
+        },
+        {
+          "item": "create:brass_sheet"
+        }
+      ],
+      "results": [
+        {
+          "id": "aerocloakingcore:incomplete_sublevel_scanner"
+        }
+      ]
+    },
+    {
+      "type": "create:pressing",
+      "ingredients": [
+        {
+          "item": "aerocloakingcore:incomplete_sublevel_scanner"
+        }
+      ],
+      "results": [
+        {
+          "id": "aerocloakingcore:incomplete_sublevel_scanner"
+        }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "id": "aerocloakingcore:sublevel_scanner"
+    }
+  ]
+}

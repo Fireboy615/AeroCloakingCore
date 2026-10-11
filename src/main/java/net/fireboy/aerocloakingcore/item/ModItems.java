@@ -2,6 +2,7 @@ package net.fireboy.aerocloakingcore.item;
 
 import net.fireboy.aerocloakingcore.AeroCloakingCore;
 import net.fireboy.aerocloakingcore.block.ModBlocks;
+import com.simibubi.create.content.processing.sequenced.SequencedAssemblyItem;
 
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
@@ -32,6 +33,17 @@ public class ModItems {
                                     .stacksTo(1)
                                     .rarity(Rarity.UNCOMMON)
                     )
+            );
+
+    /**
+     * Work-in-progress scanner for Create Sequenced Assembly. Deliberately
+     * excluded from the normal creative tab: it only represents progress
+     * through the scanner's manufacturing process.
+     */
+    public static final DeferredItem<SequencedAssemblyItem> INCOMPLETE_SUBLEVEL_SCANNER =
+            ITEMS.register(
+                    "incomplete_sublevel_scanner",
+                    () -> new SequencedAssemblyItem(new Item.Properties().stacksTo(1))
             );
 
     public static final DeferredItem<SublevelScannerItem> SUBLEVEL_SCANNER =

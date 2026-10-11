@@ -9,6 +9,7 @@ import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
+import net.neoforged.fml.ModList;
 
 import org.joml.Matrix4f;
 
@@ -57,7 +58,10 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
     private Iterable<ClientSubLevel> aerocloakingcore$filterBlockEntities(
             Iterable<ClientSubLevel> subLevels
     ) {
-        return filter(subLevels, false);
+        // Linkage rods can originate in a completely hidden ship yet extend
+        // into an uncloaked world. Their BE renderer must still be consulted.
+        return filter(subLevels, false,
+                ModList.get().isLoaded("aeronautics_utility_objects"));
     }
 
     @ModifyVariable(
@@ -69,7 +73,8 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
     private Iterable<ClientSubLevel> aerocloakingcore$filterCulling(
             Iterable<ClientSubLevel> subLevels
     ) {
-        return filter(subLevels, true);
+        return filter(subLevels, true,
+                ModList.get().isLoaded("aeronautics_utility_objects"));
     }
 
     /**
@@ -192,6 +197,14 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
             Iterable<ClientSubLevel> subLevels,
             boolean keepForEntityDepth
     ) {
+        return filter(subLevels, keepForEntityDepth, false);
+    }
+
+    private static Iterable<ClientSubLevel> filter(
+            Iterable<ClientSubLevel> subLevels,
+            boolean keepForEntityDepth,
+            boolean keepForLinkages
+    ) {
         return () -> new Iterator<>() {
 
             private final Iterator<ClientSubLevel> original =
@@ -209,7 +222,8 @@ public abstract class VanillaSubLevelRenderDispatcherMixin {
                     ClientSubLevel candidate =
                             original.next();
 
-                    if (!CloakingClient.shouldHideSubLevel(candidate)
+                    if (keepForLinkages
+                            || !CloakingClient.shouldHideSubLevel(candidate)
                             || (keepForEntityDepth
                             && CloakingClient.shouldWriteEntityOcclusionDepth(candidate))) {
                         next = candidate;

@@ -1,0 +1,44 @@
+{
+  "type": "create:mechanical_crafting",
+  "accept_mirrored": false,
+  "category": "misc",
+  "key": {
+    "B": {
+      "item": "create:brass_sheet"
+    },
+    "G": {
+      "item": "minecraft:tinted_glass"
+    },
+    "P": {
+      "item": "create:precision_mechanism"
+    },
+    "V": {
+      "type": "neoforge:components",
+      "items": "minecraft:potion",
+      "components": {
+        "minecraft:potion_contents": {
+          "potion": "minecraft:invisibility"
+        }
+      },
+      "strict": false
+    },
+    "E": {
+      "item": "minecraft:echo_shard"
+    },
+    "S": {
+      "item": "create:shaft"
+    }
+  },
+  "pattern": [
+    "BBBBBBB",
+    "BPPGGGB",
+    "SSBVEVB",
+    "BPPGGGB",
+    "BBBBBBB"
+  ],
+  "result": {
+    "count": 1,
+    "id": "aerocloakingcore:cloaking_core"
+  },
+  "show_notification": false
+}

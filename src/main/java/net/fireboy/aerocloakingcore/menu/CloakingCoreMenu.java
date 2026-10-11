@@ -40,7 +40,10 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
     public static final int DATA_SERVER_STRENGTH_X10000 = 15;
     public static final int DATA_STRESS_IMPACT_X1000 = 16;
     public static final int DATA_SYNC_MARKER = 17;
-    public static final int DATA_COUNT = 18;
+    public static final int DATA_RENDER_MODE = 18;
+    public static final int DATA_CONNECTED_SUBLEVELS = 19;
+    public static final int DATA_ROPE_CONNECTED_SUBLEVELS = 20;
+    public static final int DATA_COUNT = 21;
 
     @Nullable
     private final CloakingCoreBlockEntity core;
@@ -157,6 +160,11 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
                             Math.round(core.getCurrentStressImpact() * 1000.0F)
                     );
                     case DATA_SYNC_MARKER -> 12345;
+                    case DATA_RENDER_MODE -> core.getRenderMode().ordinal();
+                    case DATA_CONNECTED_SUBLEVELS ->
+                            core.getSettings().cloakConnectedSubLevels() ? 1 : 0;
+                    case DATA_ROPE_CONNECTED_SUBLEVELS ->
+                            core.getSettings().cloakRopeConnectedSubLevels() ? 1 : 0;
                     default -> 0;
                 };
             }
@@ -256,6 +264,21 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
 
     public float getServerCloakStrength() {
         return systemData.get(DATA_SERVER_STRENGTH_X10000) / 10000.0F;
+    }
+
+    public CloakRenderMode getServerRenderMode() {
+        int index = systemData.get(DATA_RENDER_MODE);
+        CloakRenderMode[] modes = CloakRenderMode.values();
+        return index >= 0 && index < modes.length
+                ? modes[index] : CloakRenderMode.DITHER;
+    }
+
+    public boolean getServerConnectedSubLevels() {
+        return systemData.get(DATA_CONNECTED_SUBLEVELS) != 0;
+    }
+
+    public boolean getServerRopeConnectedSubLevels() {
+        return systemData.get(DATA_ROPE_CONNECTED_SUBLEVELS) != 0;
     }
 
     public float getCurrentStressImpact() {
@@ -362,6 +385,25 @@ public class CloakingCoreMenu extends AbstractContainerMenu {
         );
 
         broadcastChanges();
+    }
+
+    @Override
+    public void broadcastChanges() {
+        if (core != null && !core.isRemoved()) {
+            // All opened menus, regardless of which Core they target, read
+            // the authoritative system-wide frequency pair from their Core.
+            // Vanilla's slot synchronization then sends differences to each
+            // viewing client without a custom packet.
+            ItemStack first = core.getLinkFrequency(true);
+            ItemStack second = core.getLinkFrequency(false);
+            if (!ItemStack.matches(frequencies.getItem(FREQUENCY_FIRST_SLOT), first)) {
+                frequencies.setItem(FREQUENCY_FIRST_SLOT, first);
+            }
+            if (!ItemStack.matches(frequencies.getItem(FREQUENCY_SECOND_SLOT), second)) {
+                frequencies.setItem(FREQUENCY_SECOND_SLOT, second);
+            }
+        }
+        super.broadcastChanges();
     }
 
     @Override

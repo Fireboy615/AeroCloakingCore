@@ -1,6 +1,7 @@
 package net.fireboy.aerocloakingcore.mixin.client;
 
 import net.fireboy.aerocloakingcore.network.CloakingClient;
+import net.neoforged.fml.ModList;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -46,7 +47,8 @@ public abstract class FancySubLevelRenderDispatcherMixin {
     private Iterable<ClientSubLevel> aerocloakingcore$filterBlockEntities(
             Iterable<ClientSubLevel> subLevels
     ) {
-        return filter(subLevels);
+        return filter(subLevels,
+                ModList.get().isLoaded("aeronautics_utility_objects"));
     }
 
     @ModifyVariable(
@@ -58,11 +60,19 @@ public abstract class FancySubLevelRenderDispatcherMixin {
     private Iterable<ClientSubLevel> aerocloakingcore$filterCulling(
             Iterable<ClientSubLevel> subLevels
     ) {
-        return filter(subLevels);
+        return filter(subLevels,
+                ModList.get().isLoaded("aeronautics_utility_objects"));
     }
 
     private static Iterable<ClientSubLevel> filter(
             Iterable<ClientSubLevel> subLevels
+    ) {
+        return filter(subLevels, false);
+    }
+
+    private static Iterable<ClientSubLevel> filter(
+            Iterable<ClientSubLevel> subLevels,
+            boolean keepForLinkages
     ) {
         return () -> new Iterator<>() {
 
@@ -80,9 +90,8 @@ public abstract class FancySubLevelRenderDispatcherMixin {
                 while (original.hasNext()) {
                     ClientSubLevel candidate = original.next();
 
-                    if (!CloakingClient.shouldHideSubLevel(
-                            candidate
-                    )) {
+                    if (keepForLinkages
+                            || !CloakingClient.shouldHideSubLevel(candidate)) {
                         next = candidate;
                         prepared = true;
                         return;

@@ -19,6 +19,9 @@ import org.lwjgl.opengl.GL11C;
 import org.lwjgl.opengl.GL14C;
 import org.lwjgl.opengl.GL20C;
 
+import java.util.Map;
+import java.util.WeakHashMap;
+
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -67,6 +70,42 @@ public abstract class VanillaChunkedSubLevelRenderDataMixin {
     @Final
     private ClientSubLevel subLevel;
 
+    /**
+     * GL uniform locations are fixed for the lifetime of a linked shader
+     * program. The old per-layer lookup called into the graphics driver for
+     * every terrain pass and every depth replay. Cache by ShaderInstance and
+     * check its current program ID to handle resource reloads; weak keys
+     * allow replaced shaders to be collected.
+     */
+    @Unique
+    private static final Map<ShaderInstance, UniformLocation>
+            aerocloakingcore$uniformLocations = new WeakHashMap<>();
+
+    @Unique
+    private record UniformLocation(int programId, int location) {
+    }
+
+    @Unique
+    private static int aerocloakingcore$getCloakUniformLocation(
+            ShaderInstance shader
+    ) {
+        int program = shader.getId();
+        if (program <= 0) {
+            return -1;
+        }
+
+        UniformLocation cached = aerocloakingcore$uniformLocations.get(shader);
+        if (cached != null && cached.programId() == program) {
+            return cached.location();
+        }
+
+        int location = GL20C.glGetUniformLocation(program, "AeroCloakStrength");
+        aerocloakingcore$uniformLocations.put(
+                shader, new UniformLocation(program, location)
+        );
+        return location;
+    }
+
     @Unique
     private int aerocloakingcore$cloakUniformLocation = -1;
 
@@ -113,14 +152,8 @@ public abstract class VanillaChunkedSubLevelRenderDataMixin {
         float cloakStrength =
                 CloakingClient.getViewerCloakStrength(subLevel);
 
-        int program =
-                shader.getId();
-
         aerocloakingcore$cloakUniformLocation =
-                GL20C.glGetUniformLocation(
-                        program,
-                        "AeroCloakStrength"
-                );
+                aerocloakingcore$getCloakUniformLocation(shader);
 
         CloakRenderMode renderMode =
                 CloakingClient.getRenderMode(subLevel);

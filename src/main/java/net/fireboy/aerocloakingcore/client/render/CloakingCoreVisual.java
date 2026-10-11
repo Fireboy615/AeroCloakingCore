@@ -2,6 +2,8 @@ package net.fireboy.aerocloakingcore.client.render;
 
 import java.util.function.Consumer;
 
+import com.simibubi.create.content.kinetics.base.KineticBlockEntityRenderer;
+
 import dev.engine_room.flywheel.api.instance.Instance;
 import dev.engine_room.flywheel.api.model.Model;
 import dev.engine_room.flywheel.api.visual.DynamicVisual;
@@ -46,9 +48,6 @@ public final class CloakingCoreVisual
 
     /** Mirror speed relative to the connected Create input shaft. */
     private static final double MIRROR_SPEED_RATIO = 0.5;
-
-    /** The short input shaft stub rotates at the actual network shaft speed. */
-    private static final double INPUT_SHAFT_SPEED_RATIO = 1.0;
 
     /**
      * Offset the mirror assembly one full block forward so it sits out in the
@@ -152,7 +151,20 @@ public final class CloakingCoreVisual
         }
 
         float mirrorAngle = (float) mirrorAngleRadians;
-        float inputShaftAngle = (float) ((mirrorAngleRadians / MIRROR_SPEED_RATIO) * INPUT_SHAFT_SPEED_RATIO);
+
+        /*
+         * IMPORTANT: neighbouring Create shafts (including the Mechanical
+         * Press) do not start at phase zero on chunk load. Create derives
+         * their phase from the shared render clock AND a block-position
+         * dependent 0/22.5 degree offset.
+         *
+         * The input stub must use the SAME formula as the adjacent Create
+         * shaft so their square cross-sections meet without a twisted seam.
+         * Unlike the slower mirrors, the input shaft runs at full network RPM.
+         */
+        float inputShaftAngle = KineticBlockEntityRenderer.getAngleForBe(
+                blockEntity, pos, facing.getAxis()
+        );
 
         /*
          * Create's kinetic sign is axis-relative. Our Blockbench model's local

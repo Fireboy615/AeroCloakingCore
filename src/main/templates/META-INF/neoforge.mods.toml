@@ -110,3 +110,26 @@ config = "aerocloakingcore.mixins.json"
     versionRange="[1.0.6,2.0)"
     ordering="AFTER"
     side="CLIENT"
+
+# Optional integrations. Only enforce the minimum version when the addon is
+# installed; Aero Cloaking Core must still work without any of these mods.
+[[dependencies.${mod_id}]]
+    modId="linearbearing"
+    type="optional"
+    versionRange="[1.2.6,)"
+    ordering="AFTER"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="aeronautics_utility_objects"
+    type="optional"
+    versionRange="[0.2.8,)"
+    ordering="AFTER"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="dyeable_ropes"
+    type="optional"
+    versionRange="[1.2.4,)"
+    ordering="AFTER"
+    side="BOTH"

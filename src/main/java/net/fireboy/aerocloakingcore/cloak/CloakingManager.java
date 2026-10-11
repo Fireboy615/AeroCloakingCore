@@ -5,6 +5,7 @@ import net.fireboy.aerocloakingcore.block.entity.CloakingCoreBlockEntity;
 import net.fireboy.aerocloakingcore.network.CloakingSyncPayload;
 
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.item.ItemStack;
 
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -144,6 +145,49 @@ public final class CloakingManager {
         }
 
         recompute(system, true);
+    }
+
+    /**
+     * A Redstone Link frequency pair belongs to the cloak SYSTEM, not to
+     * whichever Core happened to have its GUI open. Every Core retains an NBT
+     * copy so saved ships preserve the pair after reloading.
+     */
+    public static void setSystemLinkFrequencies(
+            UUID subLevelId,
+            CloakingCoreBlockEntity source
+    ) {
+        if (subLevelId == null || !isLive(source)) {
+            return;
+        }
+
+        SETTINGS_REVISIONS.put(source, ++settingsRevisionCounter);
+        if (!REGISTRATIONS.containsKey(source)) {
+            REGISTRATIONS.put(
+                    source,
+                    new CoreRegistration(subLevelId, snapshotFor(source, subLevelId))
+            );
+            rebuildSystems();
+        }
+
+        CloakSystem system = systemForSubLevel(subLevelId);
+        if (system == null || !system.cores.contains(source)) {
+            rebuildSystems();
+            system = systemForSubLevel(subLevelId);
+        }
+        if (system == null) {
+            return;
+        }
+
+        system.linkFrequencyFirst = source.getLinkFrequency(true);
+        system.linkFrequencySecond = source.getLinkFrequency(false);
+        for (CloakingCoreBlockEntity member : system.cores) {
+            if (isLive(member)) {
+                member.applySystemLinkFrequenciesFromManager(
+                        system.linkFrequencyFirst,
+                        system.linkFrequencySecond
+                );
+            }
+        }
     }
 
     public static void unregisterCore(
@@ -289,10 +333,20 @@ public final class CloakingManager {
             system.settings = settingsSource != null
                     ? settingsSource.getSettings().normalized()
                     : CloakingCoreSettings.DEFAULT;
+            system.linkFrequencyFirst = settingsSource != null
+                    ? settingsSource.getLinkFrequency(true)
+                    : ItemStack.EMPTY;
+            system.linkFrequencySecond = settingsSource != null
+                    ? settingsSource.getLinkFrequency(false)
+                    : ItemStack.EMPTY;
 
             for (CloakingCoreBlockEntity core : system.cores) {
                 if (isLive(core)) {
                     core.applySystemSettingsFromManager(system.settings);
+                    core.applySystemLinkFrequenciesFromManager(
+                            system.linkFrequencyFirst,
+                            system.linkFrequencySecond
+                    );
                 }
             }
 
@@ -687,6 +741,8 @@ public final class CloakingManager {
 
         private CloakingCoreSettings settings;
         private CloakingCoreSettings publishedSettings;
+        private ItemStack linkFrequencyFirst = ItemStack.EMPTY;
+        private ItemStack linkFrequencySecond = ItemStack.EMPTY;
 
         private int blockCount;
         private int totalPotentialCapacity;

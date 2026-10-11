@@ -14,6 +14,7 @@ import net.fireboy.aerocloakingcore.network.CloakingClient;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
+import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 
 import org.joml.Matrix4f;
 
@@ -67,6 +68,19 @@ public final class AlphaSubLevelRenderQueue {
             Collections.newSetFromMap(new IdentityHashMap<>());
 
     /**
+     * The temporary occlusion shell includes all original terrain layers,
+     * including translucent blocks and tripwire (unlike Surface Alpha).
+     * Only skip layers whose compiled section buffers are ALL empty.
+     */
+    private static final RenderType[] ENTITY_OCCLUSION_LAYERS = {
+            RenderType.solid(),
+            RenderType.cutoutMipped(),
+            RenderType.cutout(),
+            RenderType.translucent(),
+            RenderType.tripwire()
+    };
+
+    /**
      * Prevent accidental duplicate capture of the same render-data/layer pair
      * during one frame while still allowing every distinct terrain layer.
      */
@@ -89,8 +103,18 @@ public final class AlphaSubLevelRenderQueue {
      * rejected instead of showing through it.
      */
     private static boolean surfaceDepthPrepassRendered;
+    /** Set only when a queued Alpha Surface terrain layer can write depth. */
+    private static boolean hasSurfaceDepthLayers;
 
     private static boolean ditherDepthPrepassRendered;
+
+    /**
+     * Several Aeronautics burners may request the identical Dither hull mask
+     * during the same frame. The depth buffer is not cleared between these
+     * direct late flame calls: draw each ship's mask at most once here.
+     */
+    private static final Set<ClientSubLevel> DITHER_DEPTH_RENDERED_FOR =
+            Collections.newSetFromMap(new IdentityHashMap<>());
 
     /**
      * True only while replaying DITHER terrain as an occlusion mask for late
@@ -112,7 +136,9 @@ public final class AlphaSubLevelRenderQueue {
         ENTITY_OCCLUSION_QUEUE.clear();
         ENTITY_OCCLUSION_QUEUED.clear();
         surfaceDepthPrepassRendered = false;
+        hasSurfaceDepthLayers = false;
         ditherDepthPrepassRendered = false;
+        DITHER_DEPTH_RENDERED_FOR.clear();
         ditherOcclusionDepthPass = false;
         entityOcclusionDepthPass = false;
     }
@@ -135,6 +161,12 @@ public final class AlphaSubLevelRenderQueue {
 
         if (!layers.add(renderType)) {
             return;
+        }
+
+        if (!hasSurfaceDepthLayers && isDepthOccludingLayer(renderType)
+                && CloakingClient.getRenderMode(renderData.getSubLevel())
+                == CloakRenderMode.ALPHA_SURFACE) {
+            hasSurfaceDepthLayers = true;
         }
 
         float[] shaderColor =
@@ -292,24 +324,25 @@ public final class AlphaSubLevelRenderQueue {
         entityOcclusionDepthPass = true;
         ditherOcclusionDepthPass = true;
         try {
-            RenderType[] layers = {
-                    RenderType.solid(),
-                    RenderType.cutoutMipped(),
-                    RenderType.cutout(),
-                    RenderType.translucent(),
-                    RenderType.tripwire()
-            };
-
             for (DeferredSubLevelAlphaRender base : ENTITY_OCCLUSION_QUEUE) {
                 if (!CloakingClient.shouldWriteEntityOcclusionDepth(
                         base.renderData().getSubLevel())) {
                     continue;
                 }
 
-                for (RenderType layer : layers) {
-                    DeferredSubLevelAlphaRender deferred = withRenderType(base, layer);
-                    restoreCapturedGlobals(deferred);
-                    renderLayer(deferred, false, true);
+                // One section scan for this sublevel. Don't create five new
+                // capture records or bind/reapply a terrain shader for layers
+                // that have no compiled vertices anywhere on the ship.
+                int layerMask = compiledOcclusionLayerMask(base.renderData());
+                if (layerMask == 0) {
+                    continue;
+                }
+
+                restoreCapturedGlobals(base);
+                for (int i = 0; i < ENTITY_OCCLUSION_LAYERS.length; i++) {
+                    if ((layerMask & (1 << i)) != 0) {
+                        renderLayer(base, ENTITY_OCCLUSION_LAYERS[i], false, true);
+                    }
                 }
             }
         } finally {
@@ -327,20 +360,39 @@ public final class AlphaSubLevelRenderQueue {
         }
     }
 
-    private static DeferredSubLevelAlphaRender withRenderType(
-            DeferredSubLevelAlphaRender base,
-            RenderType renderType
+    /**
+     * Read section compilation state at draw time, not capture time.
+     * A shader layer with no compiled vertex buffers cannot write depth;
+     * omitting it preserves the occlusion image while saving shader setup.
+     *
+     * If a section has an unknown compiled state, conservatively keep every
+     * layer. Cache nothing across frames, so chunk rebuilds and moving
+     * sublevel geometry take effect immediately.
+     */
+    private static int compiledOcclusionLayerMask(
+            VanillaChunkedSubLevelRenderData renderData
     ) {
-        return new DeferredSubLevelAlphaRender(
-                base.renderData(), renderType,
-                base.modelView(), base.projection(), base.textureMatrix(),
-                base.cameraX(), base.cameraY(), base.cameraZ(),
-                base.shaderColorR(), base.shaderColorG(), base.shaderColorB(), base.shaderColorA(),
-                base.shaderGlintAlpha(),
-                base.fogStart(), base.fogEnd(),
-                base.fogColorR(), base.fogColorG(), base.fogColorB(), base.fogColorA(),
-                base.fogShape()
-        );
+        final int allLayers = (1 << ENTITY_OCCLUSION_LAYERS.length) - 1;
+        int mask = 0;
+
+        for (SectionRenderDispatcher.RenderSection section
+                : renderData.allRenderSections()) {
+            if (section == null || section.getCompiled() == null) {
+                return allLayers;
+            }
+
+            var compiled = section.getCompiled();
+            for (int i = 0; i < ENTITY_OCCLUSION_LAYERS.length; i++) {
+                if (!compiled.isEmpty(ENTITY_OCCLUSION_LAYERS[i])) {
+                    mask |= 1 << i;
+                }
+            }
+            if (mask == allLayers) {
+                break;
+            }
+        }
+
+        return mask;
     }
 
     public static boolean isEmpty() {
@@ -435,7 +487,8 @@ public final class AlphaSubLevelRenderQueue {
         float targetStrength =
                 CloakingClient.getViewerCloakStrength(targetSubLevel);
 
-        if (targetStrength <= 0.0001F || targetStrength >= 0.9999F) {
+        if (targetStrength <= 0.0001F || targetStrength >= 0.9999F
+                || DITHER_DEPTH_RENDERED_FOR.contains(targetSubLevel)) {
             return;
         }
 
@@ -450,6 +503,7 @@ public final class AlphaSubLevelRenderQueue {
 
         ditherOcclusionDepthPass = true;
         try {
+            boolean wroteDepth = false;
             for (DeferredSubLevelAlphaRender deferred : DITHER_DEPTH_QUEUE) {
                 if (deferred.renderData().getSubLevel() != targetSubLevel
                         || !isDepthOccludingLayer(deferred.renderType())) {
@@ -458,6 +512,10 @@ public final class AlphaSubLevelRenderQueue {
 
                 restoreCapturedGlobals(deferred);
                 renderLayer(deferred, false, true);
+                wroteDepth = true;
+            }
+            if (wroteDepth) {
+                DITHER_DEPTH_RENDERED_FOR.add(targetSubLevel);
             }
         } finally {
             ditherOcclusionDepthPass = false;
@@ -482,7 +540,7 @@ public final class AlphaSubLevelRenderQueue {
      * glass/water can still reveal geometry behind them.
      */
     public static void renderSurfaceDepthPrepass() {
-        if (surfaceDepthPrepassRendered || QUEUE.isEmpty()) {
+        if (surfaceDepthPrepassRendered || !hasSurfaceDepthLayers) {
             return;
         }
 
@@ -546,6 +604,13 @@ public final class AlphaSubLevelRenderQueue {
     public static void renderQueued() {
         renderDitherDepthPrepass();
         renderSurfaceDepthPrepass();
+
+        // On DITHER-only frames the queue has no deferred alpha geometry.
+        // The old path still copied every RenderSystem global and entered a
+        // restore-all finally block, despite having no layers to replay.
+        if (QUEUE.isEmpty()) {
+            return;
+        }
 
         float[] lateShaderColor =
                 RenderSystem.getShaderColor().clone();
@@ -694,8 +759,15 @@ public final class AlphaSubLevelRenderQueue {
             boolean writeColor,
             boolean writeDepth
     ) {
-        RenderType layer =
-                deferred.renderType();
+        renderLayer(deferred, deferred.renderType(), writeColor, writeDepth);
+    }
+
+    private static void renderLayer(
+            DeferredSubLevelAlphaRender deferred,
+            RenderType layer,
+            boolean writeColor,
+            boolean writeDepth
+    ) {
 
         /*
          * Restore this layer's normal texture/lightmap/blend/depth/shader
@@ -704,6 +776,21 @@ public final class AlphaSubLevelRenderQueue {
          * main target afterward.
          */
         layer.setupRenderState();
+
+        /*
+         * Named CPU-profile sections make it possible to separate cloak
+         * geometry replay from normal world terrain in F3+L recordings.
+         * The profiler is a no-op when profiling is disabled; this does not
+         * introduce GL timer-query stalls or wait for the GPU.
+         */
+        var profiler = Minecraft.getInstance().getProfiler();
+        profiler.push(writeColor
+                ? "aero_alpha_terrain"
+                : entityOcclusionDepthPass
+                        ? "aero_entity_depth"
+                        : ditherOcclusionDepthPass
+                                ? "aero_dither_depth"
+                                : "aero_surface_depth");
 
         try {
             Minecraft.getInstance()
@@ -808,6 +895,7 @@ public final class AlphaSubLevelRenderQueue {
 
             GL11C.glColorMask(true, true, true, true);
             RenderSystem.depthMask(true);
+            profiler.pop();
         }
     }
 

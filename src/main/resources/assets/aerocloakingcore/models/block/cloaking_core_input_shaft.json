@@ -21,15 +21,6 @@
       "neoforge_data": {
         "calculate_normals": true
       },
-      "rotation": {
-        "angle": 22.5,
-        "axis": "z",
-        "origin": [
-          8,
-          8,
-          1
-        ]
-      },
       "faces": {
         "north": {
           "uv": [

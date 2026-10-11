@@ -12,6 +12,7 @@ import dev.simulated_team.simulated.content.blocks.rope.RopeStrandHolderBehavior
 import net.fireboy.aerocloakingcore.client.BlockEntityCloakRenderQueue;
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.client.RopeCloakRenderQueue;
+import net.fireboy.aerocloakingcore.client.TransmissionLinkageCloakCompat;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -67,6 +68,18 @@ public abstract class BlockEntityRenderDispatcherCloakMixin {
                         partialTick
                 );
             }
+        }
+
+        /*
+         * Transmission & Linkage rods extend between two independent worlds.
+         * Unlike ordinary BERs, they need a varying opacity along the rod
+         * instead of the single cloak strength of their owning endpoint.
+         */
+        if (TransmissionLinkageCloakCompat.enqueueIfNeeded(
+                renderer, blockEntity, partialTick, poseStack,
+                packedLight, packedOverlay
+        )) {
+            return;
         }
 
         SubLevel subLevel = Sable.HELPER.getContaining(blockEntity);

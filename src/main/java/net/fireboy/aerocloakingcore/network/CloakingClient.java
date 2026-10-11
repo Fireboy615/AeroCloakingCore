@@ -22,6 +22,7 @@ import net.minecraft.world.level.Level;
 import org.joml.Vector3d;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -145,6 +146,31 @@ public final class CloakingClient {
     private static final Map<UUID, CloakTransition> TRANSITIONS =
             new ConcurrentHashMap<>();
 
+    /**
+     * Client rendering repeatedly asks for the same sublevel's viewer strength
+     * (terrain layers, depth masks, BERs, particles, Flywheel). The full
+     * calculation includes Sable ownership lookups and group/shape distance
+     * queries, neither of which needs to be repeated inside one render frame.
+     *
+     * This is strictly a render-frame cache, not a tick/time-based cache: it
+     * is discarded after LevelRenderer.renderLevel returns. UUID-only strength
+     * queries have different proximity semantics and are intentionally not
+     * cached here.
+     */
+    private static final Map<UUID, Float> FRAME_VIEWER_STRENGTH =
+            new HashMap<>();
+    private static boolean withinRenderFrame;
+
+    public static void beginRenderFrame() {
+        FRAME_VIEWER_STRENGTH.clear();
+        withinRenderFrame = true;
+    }
+
+    public static void endRenderFrame() {
+        withinRenderFrame = false;
+        FRAME_VIEWER_STRENGTH.clear();
+    }
+
     private CloakingClient() {
     }
 
@@ -152,6 +178,9 @@ public final class CloakingClient {
             List<CloakingSyncPayload.Entry> entries,
             CloakingServerSettings serverSettings
     ) {
+        // Usually packets are applied between frames; also handle a sync
+        // that happens to arrive during a frame without serving stale data.
+        FRAME_VIEWER_STRENGTH.clear();
         boolean wasEnabled = SERVER_SETTINGS.modEnabled();
         SERVER_SETTINGS = serverSettings != null
                 ? serverSettings.normalized()
@@ -201,6 +230,28 @@ public final class CloakingClient {
             setTargetStrength(id, settings.cloakStrength());
         }
 
+        /*
+         * A Linear Bearing can leave the host's bounding box without becoming
+         * another Sable child. When the server drops that member we must
+         * preserve its previous rendering mode, duration AND group identity
+         * until its visual transition has faded back in. Otherwise distance /
+         * aboard reveal switches to standalone defaults mid-transition and
+         * the carriage appears to snap into existence.
+         */
+        for (UUID id : known) {
+            if (!incoming.contains(id)) {
+                setTargetStrength(id, 0.0F);
+                if (getCloakStrength(id) > 0.001F) {
+                    UUID leavingGroup = GROUP_IDS.getOrDefault(id, id);
+                    incomingGroups.computeIfAbsent(
+                            leavingGroup, ignored -> ConcurrentHashMap.newKeySet()
+                    ).add(id);
+                } else {
+                    GROUP_IDS.remove(id);
+                }
+            }
+        }
+
         SERVER_SUBLEVELS.clear();
         SERVER_SUBLEVELS.addAll(incoming);
 
@@ -211,14 +262,10 @@ public final class CloakingClient {
             GROUP_MEMBERS.put(group.getKey(), members);
         }
 
-        GROUP_IDS.keySet().removeIf(id -> !incoming.contains(id));
+        GROUP_IDS.keySet().removeIf(id ->
+                !incoming.contains(id) && getCloakStrength(id) <= 0.001F
+        );
         HULL_ENVELOPES.keySet().removeIf(id -> !incoming.contains(id));
-
-        for (UUID id : known) {
-            if (!incoming.contains(id)) {
-                setTargetStrength(id, 0.0F);
-            }
-        }
     }
 
     /** Backwards-friendly helper used by older call sites if any remain. */
@@ -381,6 +428,13 @@ public final class CloakingClient {
         }
 
         UUID subLevelId = subLevel.getUniqueId();
+        if (withinRenderFrame) {
+            Float cached = FRAME_VIEWER_STRENGTH.get(subLevelId);
+            if (cached != null) {
+                return cached;
+            }
+        }
+
         long now = System.nanoTime();
         SubLevel viewerSubLevel = getViewerSubLevel();
 
@@ -388,6 +442,9 @@ public final class CloakingClient {
 
         float baseStrength = getCloakStrength(subLevelId);
         if (baseStrength <= 0.0F) {
+            if (withinRenderFrame) {
+                FRAME_VIEWER_STRENGTH.put(subLevelId, 0.0F);
+            }
             return 0.0F;
         }
 
@@ -430,7 +487,11 @@ public final class CloakingClient {
         effectiveStrength = clamp(effectiveStrength);
         LAST_EFFECTIVE_VIEWER_STRENGTH.put(key, effectiveStrength);
 
-        return clamp(baseStrength * effectiveStrength);
+        float result = clamp(baseStrength * effectiveStrength);
+        if (withinRenderFrame) {
+            FRAME_VIEWER_STRENGTH.put(subLevelId, result);
+        }
+        return result;
     }
 
     /**

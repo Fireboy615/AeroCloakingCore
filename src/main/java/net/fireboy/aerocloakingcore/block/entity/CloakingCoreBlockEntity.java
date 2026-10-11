@@ -8,12 +8,15 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.simulated_team.simulated.content.blocks.rope.RopeStrandHolderBlockEntity;
 
 import net.fireboy.aerocloakingcore.AeroCloakingCore;
+import net.fireboy.aerocloakingcore.block.ModBlocks;
 import net.fireboy.aerocloakingcore.client.CloakRenderMode;
 import net.fireboy.aerocloakingcore.cloak.CloakingCoreSettings;
 import net.fireboy.aerocloakingcore.cloak.CloakingManager;
+import net.fireboy.aerocloakingcore.cloak.LinearBearingCloakCompat;
 import net.fireboy.aerocloakingcore.menu.CloakingCoreMenu;
 import net.fireboy.aerocloakingcore.redstone.CloakingReceivingLink;
 
+import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
@@ -31,6 +34,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayDeque;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -61,6 +65,10 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
     private static final String TAG_SUBLEVEL_BLOCK_COUNT = "SubLevelBlockCount";
     private static final String TAG_ASSIGNED_BLOCK_LOAD = "AssignedBlockLoad";
     private static final String TAG_SYSTEM_EFFICIENCY_FACTOR = "SystemEfficiencyFactor";
+    private static final String TAG_SYSTEM_CORE_COUNT = "SystemCoreCount";
+    private static final String TAG_SYSTEM_BLOCK_COUNT = "SystemBlockCount";
+    private static final String TAG_SYSTEM_OPERATIONAL_CAPACITY = "SystemOperationalCapacity";
+    private static final String TAG_SYSTEM_CAPACITY_SATISFIED = "SystemCapacitySatisfied";
 
     /** Exact minimum mechanical speed required by the Cloaking Core. */
     public static final float MINIMUM_REQUIRED_RPM = 32.0F;
@@ -269,6 +277,70 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
      */
     public float getCurrentRequiredSu() {
         return getCurrentStressImpact() * getTheoreticalRpm();
+    }
+
+    @Override
+    public boolean addToGoggleTooltip(List<Component> tooltip, boolean isPlayerSneaking) {
+        super.addToGoggleTooltip(tooltip, isPlayerSneaking);
+
+        tooltip.add(Component.empty());
+        tooltip.add(Component.translatable("goggles.aerocloakingcore.cloak_stats")
+                .withStyle(ChatFormatting.GOLD));
+
+        String statusKey;
+        ChatFormatting statusColor;
+        if (systemBlockCount <= 0) {
+            statusKey = "no_ship";
+            statusColor = ChatFormatting.GRAY;
+        } else if (isOverStressed()) {
+            statusKey = "overstressed";
+            statusColor = ChatFormatting.RED;
+        } else if (getCurrentRpm() + 0.0001F < MINIMUM_REQUIRED_RPM) {
+            statusKey = "below_speed";
+            statusColor = ChatFormatting.RED;
+        } else if (!systemCapacitySatisfied) {
+            statusKey = "insufficient_capacity";
+            statusColor = ChatFormatting.RED;
+        } else {
+            statusKey = "ready";
+            statusColor = ChatFormatting.GREEN;
+        }
+
+        addGoggleLine(tooltip, "status", Component.translatable(
+                "goggles.aerocloakingcore.status." + statusKey
+        ).withStyle(statusColor));
+        addGoggleLine(tooltip, "speed", Component.literal(
+                Math.round(getCurrentRpm()) + " RPM"
+        ).withStyle(ChatFormatting.AQUA));
+        addGoggleLine(tooltip, "strength", Component.literal(
+                Math.round(getCloakStrength() * 100.0F) + "%"
+        ).withStyle(ChatFormatting.AQUA));
+        addGoggleLine(tooltip, "ship_load", Component.literal(
+                systemBlockCount + " / " + systemOperationalCapacity + " blocks"
+        ).withStyle(systemCapacitySatisfied ? ChatFormatting.AQUA : ChatFormatting.RED));
+        addGoggleLine(tooltip, "cores", Component.literal(
+                Integer.toString(Math.max(1, systemCoreCount))
+        ).withStyle(ChatFormatting.AQUA));
+
+        if (systemEfficiencyFactor > 1.0001F) {
+            addGoggleLine(tooltip, "efficiency", Component.literal(
+                    Math.round(systemEfficiencyFactor * 100.0F) + "%"
+            ).withStyle(ChatFormatting.GREEN));
+        }
+
+        return true;
+    }
+
+    private static void addGoggleLine(
+            List<Component> tooltip,
+            String label,
+            Component value
+    ) {
+        tooltip.add(Component.literal("  ")
+                .append(Component.translatable("goggles.aerocloakingcore." + label)
+                        .withStyle(ChatFormatting.GRAY))
+                .append(Component.literal(": ").withStyle(ChatFormatting.DARK_GRAY))
+                .append(value));
     }
 
     /**
@@ -489,24 +561,31 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
             float transitionDurationSeconds,
             double fullyCloakedDistance
     ) {
-        this.systemCoreCount = Math.max(0, coreCount);
-        this.systemBlockCount = Math.max(0, blockCount);
+        int normalizedCoreCount = Math.max(0, coreCount);
+        int normalizedBlockCount = Math.max(0, blockCount);
+        int normalizedOperationalCapacity = Math.max(0, operationalCapacity);
+        float normalizedEfficiency = Math.max(1.0F, Math.min(1.25F, efficiencyFactor));
+
+        boolean clientStatsChanged = this.systemCoreCount != normalizedCoreCount
+                || this.systemBlockCount != normalizedBlockCount
+                || this.systemOperationalCapacity != normalizedOperationalCapacity
+                || this.systemCapacitySatisfied != capacitySatisfied
+                || Math.abs(this.systemEfficiencyFactor - normalizedEfficiency) >= 0.0001F;
+
+        this.systemCoreCount = normalizedCoreCount;
+        this.systemBlockCount = normalizedBlockCount;
         this.systemPotentialCapacity = Math.max(0, potentialCapacity);
-        this.systemOperationalCapacity = Math.max(0, operationalCapacity);
+        this.systemOperationalCapacity = normalizedOperationalCapacity;
         this.systemCapacitySatisfied = capacitySatisfied;
         this.systemEffectiveRpm = Math.max(0.0F, effectiveRpm);
-        this.systemEfficiencyFactor = Math.max(
-                1.0F,
-                Math.min(1.25F, efficiencyFactor)
-        );
-        this.systemTransitionDurationSeconds = Math.max(
-                0.0F,
-                transitionDurationSeconds
-        );
-        this.systemFullyCloakedDistance = Math.max(
-                0.0,
-                fullyCloakedDistance
-        );
+        this.systemEfficiencyFactor = normalizedEfficiency;
+        this.systemTransitionDurationSeconds = Math.max(0.0F, transitionDurationSeconds);
+        this.systemFullyCloakedDistance = Math.max(0.0, fullyCloakedDistance);
+
+        if (clientStatsChanged && level != null && !level.isClientSide) {
+            setChanged();
+            sendData();
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -545,38 +624,64 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         ItemStack normalized = stack.isEmpty()
                 ? ItemStack.EMPTY
                 : stack.copyWithCount(1);
+        ItemStack updatedFirst = first ? normalized : linkFrequencyFirst;
+        ItemStack updatedSecond = first ? linkFrequencySecond : normalized;
 
-        ItemStack previous = first
-                ? linkFrequencyFirst
-                : linkFrequencySecond;
-
-        if (ItemStack.isSameItemSameComponents(previous, normalized)
-                && previous.getCount() == normalized.getCount()) {
+        if (!updateLinkFrequencies(updatedFirst, updatedSecond)) {
             return;
         }
 
-        if (first) {
-            linkFrequencyFirst = normalized;
-        } else {
-            linkFrequencySecond = normalized;
+        if (level != null && !level.isClientSide) {
+            if (cloakedSubLevelId != null) {
+                CloakingManager.setSystemLinkFrequencies(cloakedSubLevelId, this);
+            }
+
+            // A newly selected frequency may already be transmitting.
+            // Keep the previous manual override unless the received signal
+            // actually changes, consistent with the regular server tick.
+            if (receivingLink.isConfigured()) {
+                int signal = receivingLink.readNetwork(level);
+                if (signal != lastRedstoneSignal) {
+                    onRedstoneLinkSignalUpdated(signal);
+                }
+            }
         }
+    }
+
+    /**
+     * Apply the shared link pair without publishing it back to the manager.
+     * This prevents recursive group updates and keeps every Core's own
+     * persisted NBT, Create receiver and block-entity client copy current.
+     */
+    public void applySystemLinkFrequenciesFromManager(
+            ItemStack first,
+            ItemStack second
+    ) {
+        updateLinkFrequencies(first, second);
+    }
+
+    private boolean updateLinkFrequencies(ItemStack first, ItemStack second) {
+        ItemStack normalizedFirst = first.isEmpty()
+                ? ItemStack.EMPTY : first.copyWithCount(1);
+        ItemStack normalizedSecond = second.isEmpty()
+                ? ItemStack.EMPTY : second.copyWithCount(1);
+
+        if (ItemStack.matches(linkFrequencyFirst, normalizedFirst)
+                && ItemStack.matches(linkFrequencySecond, normalizedSecond)) {
+            return false;
+        }
+
+        linkFrequencyFirst = normalizedFirst;
+        linkFrequencySecond = normalizedSecond;
 
         if (level != null && !level.isClientSide) {
             receivingLink.removeFromNetwork(level);
-            receivingLink.setFrequencies(
-                    linkFrequencyFirst,
-                    linkFrequencySecond
-            );
+            receivingLink.setFrequencies(linkFrequencyFirst, linkFrequencySecond);
             receivingLink.addToNetwork(level);
-
-            if (receivingLink.isConfigured()) {
-                onRedstoneLinkSignalUpdated(
-                        receivingLink.readNetwork(level)
-                );
-            }
+            setChanged();
+            sendData();
         }
-
-        setChanged();
+        return true;
     }
 
     /** Shift-right-click binary manual override. */
@@ -691,6 +796,10 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         tag.putInt(TAG_SUBLEVEL_BLOCK_COUNT, subLevelBlockCount);
         tag.putFloat(TAG_ASSIGNED_BLOCK_LOAD, assignedBlockLoad);
         tag.putFloat(TAG_SYSTEM_EFFICIENCY_FACTOR, systemEfficiencyFactor);
+        tag.putInt(TAG_SYSTEM_CORE_COUNT, systemCoreCount);
+        tag.putInt(TAG_SYSTEM_BLOCK_COUNT, systemBlockCount);
+        tag.putInt(TAG_SYSTEM_OPERATIONAL_CAPACITY, systemOperationalCapacity);
+        tag.putBoolean(TAG_SYSTEM_CAPACITY_SATISFIED, systemCapacitySatisfied);
 
         tag.put(
                 TAG_LINK_FIRST,
@@ -729,6 +838,13 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
         systemEfficiencyFactor = tag.contains(TAG_SYSTEM_EFFICIENCY_FACTOR)
                 ? Math.max(1.0F, Math.min(1.25F, tag.getFloat(TAG_SYSTEM_EFFICIENCY_FACTOR)))
                 : 1.0F;
+        systemCoreCount = Math.max(0, tag.getInt(TAG_SYSTEM_CORE_COUNT));
+        systemBlockCount = Math.max(0, tag.getInt(TAG_SYSTEM_BLOCK_COUNT));
+        systemOperationalCapacity = Math.max(
+                0,
+                tag.getInt(TAG_SYSTEM_OPERATIONAL_CAPACITY)
+        );
+        systemCapacitySatisfied = tag.getBoolean(TAG_SYSTEM_CAPACITY_SATISFIED);
 
         linkFrequencyFirst = tag.contains(TAG_LINK_FIRST)
                 ? ItemStack.parseOptional(
@@ -769,6 +885,16 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
     // ---------------------------------------------------------------------
     // TICKING
     // ---------------------------------------------------------------------
+
+    @Override
+    public void onLoad() {
+        super.onLoad();
+        if (level != null && !level.isClientSide) {
+            // Existing worlds still contain the former chamber=true block
+            // state. Verify/upgrade its companion when the drive is loaded.
+            level.scheduleTick(worldPosition, ModBlocks.CLOAKING_CORE.get(), 2);
+        }
+    }
 
     @Override
     public void tick() {
@@ -943,6 +1069,13 @@ public class CloakingCoreBlockEntity extends KineticBlockEntity
                 }
             }
         }
+
+        // Position-based, non-parental membership for independent Linear Bearing
+        // sublevels. This is recalculated on every scan so sliding outside the
+        // ship's bounds immediately removes both cloak and capacity cost.
+        LinearBearingCloakCompat.includeInsideBoundingBox(
+                root, result, CloakingCoreBlockEntity::countSubLevelBlocks
+        );
 
         return result;
     }

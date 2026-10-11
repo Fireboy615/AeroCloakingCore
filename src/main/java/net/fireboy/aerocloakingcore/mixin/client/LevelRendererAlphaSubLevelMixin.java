@@ -4,6 +4,7 @@ import com.mojang.blaze3d.systems.RenderSystem;
 
 import net.fireboy.aerocloakingcore.client.AeroCloakingCoreClient;
 import net.fireboy.aerocloakingcore.client.AlphaSubLevelRenderQueue;
+import net.fireboy.aerocloakingcore.network.CloakingClient;
 
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
@@ -38,7 +39,13 @@ public abstract class LevelRendererAlphaSubLevelMixin {
     private void aerocloakingcore$beginAlphaSubLevelFrame(
             CallbackInfo ci
     ) {
+        CloakingClient.beginRenderFrame();
         AlphaSubLevelRenderQueue.beginFrame();
+    }
+
+    @Inject(method = "renderLevel", at = @At("RETURN"))
+    private void aerocloakingcore$endCloakingRenderFrame(CallbackInfo ci) {
+        CloakingClient.endRenderFrame();
     }
 
     @Inject(

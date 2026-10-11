@@ -18,7 +18,6 @@ import dev.simulated_team.simulated.content.blocks.rope.RopeStrandHolderBehavior
 import dev.simulated_team.simulated.content.blocks.rope.strand.client.ClientLevelRopeManager;
 import dev.simulated_team.simulated.content.blocks.rope.strand.client.ClientRopePoint;
 import dev.simulated_team.simulated.content.blocks.rope.strand.client.ClientRopeStrand;
-import dev.simulated_team.simulated.index.SimPartialModels;
 import dev.simulated_team.simulated.util.SimMathUtils;
 
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
@@ -39,6 +38,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.util.Mth;
 
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
@@ -123,22 +123,73 @@ public final class RopeCloakRenderQueue {
     private static Level trackedRootLevel;
     private static float currentPartialTick;
 
+    /**
+     * Nearby Sable sublevels do not need to be rediscovered multiple times
+     * per frame. Keep registered levels/strands current each frame, but only
+     * refresh the 1024-block spatial discovery once every ten render frames.
+     * Root-level/world changes force immediate rediscovery.
+     */
+    private static final int LEVEL_DISCOVERY_INTERVAL_FRAMES = 10;
+    private static int framesUntilLevelDiscovery;
+
+    /**
+     * Scratch registry reused instead of allocating a LinkedHashMap for every
+     * render frame. Rendering, rope registration and refresh run on the client
+     * render thread and never iterate this scratch map externally.
+     */
+    private static final Map<UUID, TrackedRopeOccluder> REFRESHED_ROPES =
+            new LinkedHashMap<>();
+
     private static final ThreadLocal<ArrayDeque<BufferSlot>> BUFFER_POOL =
             ThreadLocal.withInitial(ArrayDeque::new);
+
+    /**
+     * Visible rope geometry and the OCCLUDED_ONLY depth proxy both need
+     * Simulated's interpolated rope positions and segment orientations.
+     * Reuse that work within a render frame, but never across frames: rope
+     * physics and moving sublevel poses may change every frame.
+     */
+    private static final Map<ClientRopeStrand, CachedRopePoints> FRAME_ROPE_POINTS =
+            new IdentityHashMap<>();
+
+    /**
+     * Discover the physical remote holder once, not on every render of every
+     * strand. The cached BLOCK ENTITY is only an identity hint: its current
+     * attachment point and its ship's render pose are checked every frame.
+     * A periodic real search still handles newly attached/replaced holders.
+     */
+    private static final Map<ClientRopeStrand, CachedRemoteHolder> REMOTE_HOLDER_CACHE =
+            new IdentityHashMap<>();
+    private static final int REMOTE_HOLDER_RESCAN_FRAMES = 12;
+    private static final int REMOTE_HOLDER_IDLE_FRAMES = 120;
+    private static long ropeRenderFrame;
 
     private RopeCloakRenderQueue() {
     }
 
     public static void beginFrame(float partialTick) {
         ALPHA_QUEUE.clear();
+        FRAME_ROPE_POINTS.clear();
         currentPartialTick = partialTick;
+        ropeRenderFrame++;
+        // Remove holders for strands that stopped being rendered (destroyed
+        // ropes, unloaded chunks and detached ships) without per-frame scans.
+        if (ropeRenderFrame % 60 == 0) {
+            REMOTE_HOLDER_CACHE.values().removeIf(
+                    cached -> ropeRenderFrame - cached.lastUsedFrame
+                            > REMOTE_HOLDER_IDLE_FRAMES
+            );
+        }
 
         Minecraft minecraft = Minecraft.getInstance();
         Level rootLevel = minecraft.level;
 
         if (rootLevel != trackedRootLevel) {
+            REMOTE_HOLDER_CACHE.clear();
             ENTITY_OCCLUSION_ROPES.clear();
             ENTITY_OCCLUSION_LEVELS.clear();
+            REFRESHED_ROPES.clear();
+            framesUntilLevelDiscovery = 0;
             trackedRootLevel = rootLevel;
         }
 
@@ -168,12 +219,19 @@ public final class RopeCloakRenderQueue {
             return false;
         }
 
-        EndpointState endpoints = resolveEndpointState(
-                blockEntity,
-                ropeHolder,
-                strand,
-                partialTick
-        );
+        var profiler = Minecraft.getInstance().getProfiler();
+        profiler.push("aero_rope_endpoint_lookup");
+        EndpointState endpoints;
+        try {
+            endpoints = resolveEndpointState(
+                    blockEntity,
+                    ropeHolder,
+                    strand,
+                    partialTick
+            );
+        } finally {
+            profiler.pop();
+        }
 
         if (endpoints == null || endpoints.maxStrength() <= 0.001F) {
             return false;
@@ -251,10 +309,11 @@ public final class RopeCloakRenderQueue {
     private static void refreshEntityOcclusionRopes() {
         if (!CloakingClient.usesEntityOcclusionMask()) {
             ENTITY_OCCLUSION_ROPES.clear();
+            REFRESHED_ROPES.clear();
             return;
         }
 
-        Map<UUID, TrackedRopeOccluder> live = new LinkedHashMap<>();
+        REFRESHED_ROPES.clear();
 
         /*
          * Discover nearby client sublevel Levels directly from Sable instead
@@ -263,7 +322,9 @@ public final class RopeCloakRenderQueue {
          */
         Minecraft minecraft = Minecraft.getInstance();
         Level rootLevel = minecraft.level;
-        if (rootLevel != null) {
+        if (rootLevel != null && framesUntilLevelDiscovery-- <= 0) {
+            framesUntilLevelDiscovery = LEVEL_DISCOVERY_INTERVAL_FRAMES - 1;
+
             Vec3 camera = minecraft.gameRenderer.getMainCamera().getPosition();
             double radius = OCCLUSION_LEVEL_DISCOVERY_RADIUS;
             AABB query = new AABB(
@@ -286,7 +347,7 @@ public final class RopeCloakRenderQueue {
             }
         }
 
-        for (Level level : new ArrayList<>(ENTITY_OCCLUSION_LEVELS)) {
+        for (Level level : ENTITY_OCCLUSION_LEVELS) {
             if (level == null) {
                 continue;
             }
@@ -297,9 +358,18 @@ public final class RopeCloakRenderQueue {
                     continue;
                 }
 
-                live.put(
-                        strand.getUuid(),
-                        new TrackedRopeOccluder(level, strand)
+                UUID id = strand.getUuid();
+                TrackedRopeOccluder existing = ENTITY_OCCLUSION_ROPES.get(id);
+                // Most ropes persist unchanged across thousands of frames.
+                // Reuse their tracked record rather than allocating a new
+                // one every frame when both owner level and strand are stable.
+                REFRESHED_ROPES.put(
+                        id,
+                        existing != null
+                                && existing.level() == level
+                                && existing.strand() == strand
+                                ? existing
+                                : new TrackedRopeOccluder(level, strand)
                 );
             }
         }
@@ -314,12 +384,12 @@ public final class RopeCloakRenderQueue {
                             .getStrand(entry.getKey());
 
             if (managerStrand == tracked.strand()) {
-                live.putIfAbsent(entry.getKey(), tracked);
+                REFRESHED_ROPES.putIfAbsent(entry.getKey(), tracked);
             }
         }
 
         ENTITY_OCCLUSION_ROPES.clear();
-        ENTITY_OCCLUSION_ROPES.putAll(live);
+        ENTITY_OCCLUSION_ROPES.putAll(REFRESHED_ROPES);
     }
 
     public static void renderQueued() {
@@ -347,7 +417,9 @@ public final class RopeCloakRenderQueue {
     }
 
     public static boolean hasEntityOcclusionDepth() {
-        refreshEntityOcclusionRopes();
+        // beginFrame() already refreshed the registry, and BER registration
+        // may have added a strand since then. Another refresh here only repeats
+        // Sable discovery and can invalidate the newly registered rope.
         return !ENTITY_OCCLUSION_ROPES.isEmpty();
     }
 
@@ -359,7 +431,6 @@ public final class RopeCloakRenderQueue {
      * even when its colour is completely invisible.</p>
      */
     public static void renderEntityOcclusionDepthPrepass() {
-        refreshEntityOcclusionRopes();
         if (ENTITY_OCCLUSION_ROPES.isEmpty()) {
             return;
         }
@@ -368,27 +439,35 @@ public final class RopeCloakRenderQueue {
         Vec3 cameraPosition = minecraft.gameRenderer.getMainCamera().getPosition();
 
         BufferSlot slot = acquireBuffer();
+        var profiler = minecraft.getProfiler();
         try {
             VertexConsumer consumer = slot.source.getBuffer(ENTITY_OCCLUSION_DEPTH_TYPE);
+            profiler.push("aero_rope_depth_geometry");
+            try {
+                for (TrackedRopeOccluder rope : ENTITY_OCCLUSION_ROPES.values()) {
+                    ClientRopeStrand strand = rope.strand();
+                    if (strand == null || strand.getPoints().size() <= 1) {
+                        continue;
+                    }
 
-            for (TrackedRopeOccluder rope : ENTITY_OCCLUSION_ROPES.values()) {
-                ClientRopeStrand strand = rope.strand();
-                if (strand == null || strand.getPoints().size() <= 1) {
-                    continue;
+                    ObjectArrayList<RopeRenderPoint> points =
+                            renderPointsFor(strand, currentPartialTick);
+
+                    renderDepthProxy(points, cameraPosition, consumer);
                 }
-
-                ObjectArrayList<RopeRenderPoint> points = buildRenderPoints(
-                        currentPartialTick,
-                        strand.getPoints()
-                );
-
-                renderDepthProxy(points, cameraPosition, consumer);
+            } finally {
+                profiler.pop();
             }
-
-            slot.source.endBatch(ENTITY_OCCLUSION_DEPTH_TYPE);
         } finally {
             try {
-                slot.source.endBatch();
+                // One private depth-proxy buffer, one flush. The old code
+                // called endBatch() again after an explicit per-type flush.
+                profiler.push("aero_rope_depth_flush");
+                try {
+                    slot.source.endBatch();
+                } finally {
+                    profiler.pop();
+                }
             } finally {
                 releaseBuffer(slot);
             }
@@ -412,6 +491,10 @@ public final class RopeCloakRenderQueue {
             return;
         }
 
+        // The entire proxy can reuse one PoseStack. Each segment uses a
+        // push/pop around the same transform that used to be built with a
+        // brand new PoseStack (and copied Quaternionf) every iteration.
+        PoseStack segmentPose = new PoseStack();
         for (int i = 1; i < points.size(); i++) {
             RopeRenderPoint point0 = points.get(i - 1);
             RopeRenderPoint point1 = points.get(i);
@@ -421,39 +504,43 @@ public final class RopeCloakRenderQueue {
                 continue;
             }
 
-            PoseStack segmentPose = new PoseStack();
-            segmentPose.translate(
-                    point0.position().x - cameraPosition.x,
-                    point0.position().y - cameraPosition.y,
-                    point0.position().z - cameraPosition.z
-            );
-            segmentPose.mulPose(new Quaternionf(point0.orientation()));
+            segmentPose.pushPose();
+            try {
+                segmentPose.translate(
+                        point0.position().x - cameraPosition.x,
+                        point0.position().y - cameraPosition.y,
+                        point0.position().z - cameraPosition.z
+                );
+                segmentPose.mulPose(point0.orientation());
 
-            if (i > 1) {
+                if (i > 1) {
+                    LevelRenderer.addChainedFilledBoxVertices(
+                            segmentPose,
+                            consumer,
+                            -KNOT_HALF_WIDTH,
+                            -KNOT_HALF_WIDTH,
+                            -KNOT_HALF_WIDTH,
+                            KNOT_HALF_WIDTH,
+                            KNOT_HALF_WIDTH,
+                            KNOT_HALF_WIDTH,
+                            1.0F, 1.0F, 1.0F, 1.0F
+                    );
+                }
+
                 LevelRenderer.addChainedFilledBoxVertices(
                         segmentPose,
                         consumer,
-                        -KNOT_HALF_WIDTH,
-                        -KNOT_HALF_WIDTH,
-                        -KNOT_HALF_WIDTH,
-                        KNOT_HALF_WIDTH,
-                        KNOT_HALF_WIDTH,
-                        KNOT_HALF_WIDTH,
+                        -ROPE_HALF_WIDTH,
+                        0.0,
+                        -ROPE_HALF_WIDTH,
+                        ROPE_HALF_WIDTH,
+                        length,
+                        ROPE_HALF_WIDTH,
                         1.0F, 1.0F, 1.0F, 1.0F
                 );
+            } finally {
+                segmentPose.popPose();
             }
-
-            LevelRenderer.addChainedFilledBoxVertices(
-                    segmentPose,
-                    consumer,
-                    -ROPE_HALF_WIDTH,
-                    0.0,
-                    -ROPE_HALF_WIDTH,
-                    ROPE_HALF_WIDTH,
-                    length,
-                    ROPE_HALF_WIDTH,
-                    1.0F, 1.0F, 1.0F, 1.0F
-            );
         }
     }
 
@@ -472,9 +559,14 @@ public final class RopeCloakRenderQueue {
             return;
         }
 
-        List<ClientRopePoint> points = strand.getPoints();
-        ObjectArrayList<RopeRenderPoint> renderPoints =
-                buildRenderPoints(partialTick, points);
+        var profiler = Minecraft.getInstance().getProfiler();
+        profiler.push("aero_rope_point_build");
+        ObjectArrayList<RopeRenderPoint> renderPoints;
+        try {
+            renderPoints = renderPointsFor(strand, partialTick);
+        } finally {
+            profiler.pop();
+        }
 
         if (renderPoints.size() <= 1) {
             return;
@@ -488,16 +580,32 @@ public final class RopeCloakRenderQueue {
             containingPose = clientSubLevel.renderPose();
         }
 
+        // Moving sublevel orientation is constant for this rope draw. Do the
+        // inverse/conjugate once rather than once for each rope segment.
+        Quaternionf containingInverseRotation = containingPose != null
+                ? new Quaternionf(containingPose.orientation()).conjugate()
+                : null;
+        BlockPos.MutableBlockPos lightPos = new BlockPos.MutableBlockPos();
+
+        // Our custom per-segment cloak renderer bypasses Dyeable Ropes'
+        // original renderer mixin. Reuse its greyscale models and strand tint
+        // here so a dyed strand never turns back into vanilla rope mid-fade.
+        DyeableRopeCloakCompat.RopeAppearance appearance =
+                DyeableRopeCloakCompat.appearance(ropeHolder);
+
         SuperByteBuffer middle = CachedBuffers.partialFacing(
-                SimPartialModels.ROPE,
+                appearance.rope(),
                 AllBlocks.ROPE.getDefaultState(),
                 Direction.NORTH
         );
         SuperByteBuffer knot = CachedBuffers.partialFacing(
-                SimPartialModels.ROPE_KNOT,
+                appearance.knot(),
                 AllBlocks.ROPE.getDefaultState(),
                 Direction.NORTH
         );
+        // Dyeable Ropes tints the SuperByteBuffer AFTER light() has been
+        // applied. Calling color() here would get reset by a later light()
+        // call during per-segment rendering.
 
         // Use physical rope distance rather than point index for the gradient.
         // Simulated's first segment can be shorter than the others, so an
@@ -515,6 +623,7 @@ public final class RopeCloakRenderQueue {
 
         double distanceFromStart = 0.0;
 
+        profiler.push("aero_rope_visible_segments");
         poseStack.pushPose();
         try {
             for (int i = 1; i < renderPoints.size(); i++) {
@@ -532,15 +641,15 @@ public final class RopeCloakRenderQueue {
                     continue;
                 }
 
-                Vector3d globalRenderPos = new Vector3d(point0.position());
-                Vector3d renderPos = new Vector3d(point0.position());
+                // The cached world position is read-only here. Only the local
+                // render-space copy and orientation copy are transformed.
+                Vector3dc globalRenderPos = point0.position();
+                Vector3d renderPos = new Vector3d(globalRenderPos);
                 Quaternionf orientation = new Quaternionf(point0.orientation());
 
                 if (containingPose != null) {
                     containingPose.transformPositionInverse(renderPos);
-                    orientation.premul(
-                            new Quaternionf(containingPose.orientation()).conjugate()
-                    );
+                    orientation.premul(containingInverseRotation);
                 }
 
                 poseStack.pushPose();
@@ -553,10 +662,12 @@ public final class RopeCloakRenderQueue {
                     poseStack.mulPose(orientation);
                     poseStack.translate(-0.5, -0.5, -0.5);
 
-                    BlockPos lightPos = BlockPos.containing(
-                            globalRenderPos.x,
-                            globalRenderPos.y,
-                            globalRenderPos.z
+                    // Query the same block light as before without allocating
+                    // a BlockPos for every rope segment.
+                    lightPos.set(
+                            Mth.floor(globalRenderPos.x()),
+                            Mth.floor(globalRenderPos.y()),
+                            Mth.floor(globalRenderPos.z())
                     );
                     int worldLight = LevelRenderer.getLightColor(level, lightPos);
 
@@ -570,16 +681,24 @@ public final class RopeCloakRenderQueue {
                         VertexConsumer vb = slot.source.getBuffer(RenderType.solid());
 
                         if (i > 1) {
-                            knot.light(worldLight).renderInto(poseStack, vb);
+                            SuperByteBuffer litKnot = knot.light(worldLight);
+                            if (appearance.dyed()) {
+                                litKnot = litKnot.color(appearance.tint());
+                            }
+                            litKnot.renderInto(poseStack, vb);
                         }
 
                         poseStack.translate(0.0, 0.5, 0.0);
                         poseStack.scale(1.0F, (float) length, 1.0F);
-                        middle.light(worldLight).renderInto(poseStack, vb);
-
-                        slot.source.endBatch();
+                        SuperByteBuffer litMiddle = middle.light(worldLight);
+                        if (appearance.dyed()) {
+                            litMiddle = litMiddle.color(appearance.tint());
+                        }
+                        litMiddle.renderInto(poseStack, vb);
                     } finally {
                         try {
+                            // Submit this segment once under its own gradient
+                            // state, even if vertex generation throws.
                             slot.source.endBatch();
                         } finally {
                             EntityCloakRenderState.end();
@@ -591,7 +710,11 @@ public final class RopeCloakRenderQueue {
                 }
             }
         } finally {
-            poseStack.popPose();
+            try {
+                poseStack.popPose();
+            } finally {
+                profiler.pop();
+            }
         }
     }
 
@@ -651,11 +774,49 @@ public final class RopeCloakRenderQueue {
                 ? lastRenderedPoint
                 : firstRenderedPoint;
 
-        ResolvedAttachment remoteAttachment = findPhysicalRopeHolderEndpoint(
-                rootLevel,
-                owner,
-                remoteRenderedPoint
+        // First validate the last real remote rope holder. Its current world
+        // position and sublevel cloak state are ALWAYS refreshed; only the
+        // expensive search through nearby block entities is amortized.
+        HolderCandidate remoteCandidate = cachedRemoteHolder(
+                strand, rootLevel, owner, remoteRenderedPoint
         );
+
+        if (remoteCandidate == null) {
+            var profiler = Minecraft.getInstance().getProfiler();
+            profiler.push("aero_rope_endpoint_full_search");
+            try {
+                remoteCandidate = findPhysicalRopeHolderEndpoint(
+                        rootLevel, owner, remoteRenderedPoint
+                );
+            } finally {
+                profiler.pop();
+            }
+
+            if (remoteCandidate != null) {
+                REMOTE_HOLDER_CACHE.put(
+                        strand,
+                        new CachedRemoteHolder(
+                                owner,
+                                remoteCandidate.holder(),
+                                remoteCandidate.holder().getLevel(),
+                                remoteCandidate.subLevel(),
+                                ropeRenderFrame
+                        )
+                );
+            } else {
+                REMOTE_HOLDER_CACHE.remove(strand);
+            }
+        }
+
+        ResolvedAttachment remoteAttachment = remoteCandidate != null
+                ? new ResolvedAttachment(
+                        EndpointVisual.of(remoteCandidate.subLevel()),
+                        remoteCandidate.worldPosition(),
+                        true,
+                        remoteCandidate.subLevel() != null,
+                        remoteCandidate.subLevel()
+                )
+                : null;
 
         if (remoteAttachment == null) {
             ClientSubLevel fallback = findEndpointSubLevel(
@@ -745,11 +906,71 @@ public final class RopeCloakRenderQueue {
     }
 
     /**
+     * Validate the remote block entity without scanning 125 positions per
+     * candidate level or querying Sable's sublevel spatial index. This never
+     * caches world positions or render modes: both can change each frame as
+     * ships move, rotate or fade.
+     *
+     * Re-running the full search every 12 frames also catches a closer newly
+     * attached rope holder, or a connection moved to another level.
+     */
+    private static HolderCandidate cachedRemoteHolder(
+            ClientRopeStrand strand,
+            Level rootLevel,
+            SmartBlockEntity owner,
+            Vector3dc renderedEndpoint
+    ) {
+        CachedRemoteHolder cached = REMOTE_HOLDER_CACHE.get(strand);
+        if (cached == null || cached.owner != owner
+                || ropeRenderFrame - cached.scanFrame >= REMOTE_HOLDER_RESCAN_FRAMES) {
+            return null;
+        }
+
+        SmartBlockEntity remote = cached.remote;
+        Level level = cached.level;
+        ClientSubLevel subLevel = cached.subLevel;
+        if (remote == owner || remote.isRemoved() || remote.getLevel() != level
+                || (subLevel == null && level != rootLevel)
+                || (subLevel != null && (subLevel.isRemoved()
+                        || subLevel.getLevel() != level))
+                || level.getBlockEntity(remote.getBlockPos()) != remote) {
+            return null;
+        }
+
+        RopeStrandHolderBehavior holder = remote.getBehaviour(
+                RopeStrandHolderBehavior.TYPE
+        );
+        if (holder == null || !holder.isAttached()) {
+            return null;
+        }
+
+        // Owning holders expose an actual client strand. The non-owning end
+        // often does not, so only reject a *known* conflicting strand here.
+        ClientRopeStrand attached = holder.getClientStrand();
+        if (attached != null && !strand.getUuid().equals(attached.getUuid())) {
+            return null;
+        }
+
+        Vector3d worldAttachment = toRootWorld(
+                level, subLevel, holder.getAttachmentPoint()
+        );
+        double distanceSquared = worldAttachment.distanceSquared(renderedEndpoint);
+        if (distanceSquared > 25.0) {
+            // The endpoint teleported/detached or the rope now connects to a
+            // different holder: discover its real owner immediately.
+            return null;
+        }
+
+        cached.lastUsedFrame = ropeRenderFrame;
+        return new HolderCandidate(remote, subLevel, worldAttachment, distanceSquared);
+    }
+
+    /**
      * Finds the actual rope-holder block entity nearest a rendered endpoint.
      * This is intentionally based on real client block entities rather than
      * Simulated's lossy client attachment BlockPos values.
      */
-    private static ResolvedAttachment findPhysicalRopeHolderEndpoint(
+    private static HolderCandidate findPhysicalRopeHolderEndpoint(
             Level rootLevel,
             SmartBlockEntity owner,
             Vector3dc renderedEndpoint
@@ -793,17 +1014,7 @@ public final class RopeCloakRenderQueue {
             }
         }
 
-        if (best == null) {
-            return null;
-        }
-
-        return new ResolvedAttachment(
-                EndpointVisual.of(best.subLevel()),
-                best.worldPosition(),
-                true,
-                best.subLevel() != null,
-                best.subLevel()
-        );
+        return best;
     }
 
     private static HolderCandidate findHolderInLevel(
@@ -824,6 +1035,7 @@ public final class RopeCloakRenderQueue {
         );
 
         HolderCandidate best = null;
+        BlockPos.MutableBlockPos probePos = new BlockPos.MutableBlockPos();
 
         for (int dx = -ENDPOINT_HOLDER_SEARCH_RADIUS;
              dx <= ENDPOINT_HOLDER_SEARCH_RADIUS;
@@ -834,8 +1046,10 @@ public final class RopeCloakRenderQueue {
                 for (int dz = -ENDPOINT_HOLDER_SEARCH_RADIUS;
                      dz <= ENDPOINT_HOLDER_SEARCH_RADIUS;
                      dz++) {
-                    BlockPos pos = center.offset(dx, dy, dz);
-                    var candidateBlockEntity = candidateLevel.getBlockEntity(pos);
+                    // 5x5x5 nearby-holder search: reuse a single probe
+                    // instead of allocating 125 BlockPos objects per level.
+                    probePos.setWithOffset(center, dx, dy, dz);
+                    var candidateBlockEntity = candidateLevel.getBlockEntity(probePos);
 
                     if (!(candidateBlockEntity instanceof SmartBlockEntity smart)
                             || smart == owner) {
@@ -864,6 +1078,7 @@ public final class RopeCloakRenderQueue {
                     if (best == null
                             || distanceSquared < best.distanceSquared()) {
                         best = new HolderCandidate(
+                                smart,
                                 candidateSubLevel,
                                 worldAttachment,
                                 distanceSquared
@@ -951,29 +1166,48 @@ public final class RopeCloakRenderQueue {
         return best;
     }
 
-    private static ObjectArrayList<RopeRenderPoint> buildRenderPoints(
-            float partialTick,
-            List<ClientRopePoint> inputPoints
+    private static ObjectArrayList<RopeRenderPoint> renderPointsFor(
+            ClientRopeStrand strand,
+            float partialTick
     ) {
-        ObjectArrayList<RopeRenderPoint> renderPoints = new ObjectArrayList<>();
-        ObjectArrayList<ClientRopePoint> points = new ObjectArrayList<>(inputPoints);
-
-        while (points.size() >= 2
-                && points.getFirst().position().distanceSquared(
-                        points.get(1).position()
-                ) < 1.0E-3) {
-            points.removeFirst();
+        CachedRopePoints cached = FRAME_ROPE_POINTS.get(strand);
+        if (cached != null && Float.floatToIntBits(cached.partialTick())
+                == Float.floatToIntBits(partialTick)) {
+            return cached.points();
         }
 
-        if (points.size() <= 1) {
+        ObjectArrayList<RopeRenderPoint> points =
+                buildRenderPoints(partialTick, strand.getPoints());
+        FRAME_ROPE_POINTS.put(strand, new CachedRopePoints(partialTick, points));
+        return points;
+    }
+
+    private static ObjectArrayList<RopeRenderPoint> buildRenderPoints(
+            float partialTick,
+            List<ClientRopePoint> points
+    ) {
+        ObjectArrayList<RopeRenderPoint> renderPoints = new ObjectArrayList<>();
+
+        // Simulated discards duplicate leading control points. Walk past them
+        // without first cloning the complete ClientRopePoint list and shifting
+        // its front repeatedly; all input control points remain unchanged.
+        int start = 0;
+        while (start + 1 < points.size()
+                && points.get(start).position().distanceSquared(
+                        points.get(start + 1).position()
+                ) < 1.0E-3) {
+            start++;
+        }
+
+        if (points.size() - start <= 1) {
             return renderPoints;
         }
 
-        Vector3dc pointZeroPosition = points.get(0).renderPos(
+        Vector3dc pointZeroPosition = points.get(start).renderPos(
                 partialTick,
                 new Vector3d()
         );
-        Vector3dc pointOnePosition = points.get(1).renderPos(
+        Vector3dc pointOnePosition = points.get(start + 1).renderPos(
                 partialTick,
                 new Vector3d()
         );
@@ -1005,7 +1239,7 @@ public final class RopeCloakRenderQueue {
         Vector3d bPos = new Vector3d();
         Vector3d aPos = new Vector3d();
 
-        for (int i = 2; i < points.size(); i++) {
+        for (int i = start + 2; i < points.size(); i++) {
             ClientRopePoint pointA = points.get(i - 1);
             ClientRopePoint pointB = points.get(i);
 
@@ -1068,11 +1302,47 @@ public final class RopeCloakRenderQueue {
     ) {
     }
 
+    private record CachedRopePoints(
+            float partialTick,
+            ObjectArrayList<RopeRenderPoint> points
+    ) {
+    }
+
     private record HolderCandidate(
+            SmartBlockEntity holder,
             ClientSubLevel subLevel,
             Vector3d worldPosition,
             double distanceSquared
     ) {
+    }
+
+    /**
+     * Remember only which remote holder belongs to the strand, never the
+     * holder's coordinates or its cloak state. The latter are recomputed
+     * against the current Sable render pose on every cache hit.
+     */
+    private static final class CachedRemoteHolder {
+        private final SmartBlockEntity owner;
+        private final SmartBlockEntity remote;
+        private final Level level;
+        private final ClientSubLevel subLevel;
+        private final long scanFrame;
+        private long lastUsedFrame;
+
+        private CachedRemoteHolder(
+                SmartBlockEntity owner,
+                SmartBlockEntity remote,
+                Level level,
+                ClientSubLevel subLevel,
+                long scanFrame
+        ) {
+            this.owner = owner;
+            this.remote = remote;
+            this.level = level;
+            this.subLevel = subLevel;
+            this.scanFrame = scanFrame;
+            this.lastUsedFrame = scanFrame;
+        }
     }
 
     private record ResolvedAttachment(

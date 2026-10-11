@@ -24,6 +24,9 @@ import net.fireboy.aerocloakingcore.client.screen.CloakingCoreScreen;
 import net.fireboy.aerocloakingcore.menu.ModMenus;
 import net.fireboy.aerocloakingcore.item.ModItems;
 import net.fireboy.aerocloakingcore.network.CloakingClient;
+import net.fireboy.aerocloakingcore.ponder.AeroCloakingCorePonderPlugin;
+
+import net.createmod.ponder.foundation.PonderIndex;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.RenderType;
@@ -72,6 +75,9 @@ public final class AeroCloakingCoreClient {
     ) {
         // Load the rotor partial models on the client before they are needed.
         CloakingCoreModels.init();
+
+        // Register this addon's Ponder scenes alongside Create's own plugin.
+        PonderIndex.addPlugin(new AeroCloakingCorePonderPlugin());
 
         modEventBus.addListener(this::clientSetup);
         modEventBus.addListener(this::registerScreens);

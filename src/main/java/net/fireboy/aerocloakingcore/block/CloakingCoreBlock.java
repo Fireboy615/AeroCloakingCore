@@ -1,6 +1,8 @@
 package net.fireboy.aerocloakingcore.block;
 
 import com.simibubi.create.content.kinetics.base.IRotate;
+import com.simibubi.create.content.equipment.wrench.IWrenchable;
+import net.createmod.catnip.math.VoxelShaper;
 import com.simibubi.create.content.kinetics.base.KineticBlock;
 import com.simibubi.create.foundation.block.IBE;
 
@@ -11,6 +13,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.RandomSource;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
@@ -18,6 +22,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.LevelAccessor;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.RenderShape;
@@ -30,6 +36,10 @@ import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
 import net.minecraft.world.level.block.state.properties.DirectionProperty;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.item.context.UseOnContext;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.Shapes;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 import org.jetbrains.annotations.Nullable;
 
@@ -51,6 +61,53 @@ public class CloakingCoreBlock extends KineticBlock
 
     private static final ThreadLocal<Boolean> REMOVING_OTHER_HALF =
             ThreadLocal.withInitial(() -> false);
+
+    // The full Blockbench casing is rendered only by the drive, but both
+    // physical block spaces need their OWN hitboxes. These follow the actual
+    // rear machinery, four frame rails and front frame (all coordinates 0..16).
+    private static final VoxelShape CORNER_RAILS = Shapes.or(
+            Block.box(0, 0, 0, 2, 2, 16),
+            Block.box(0, 14, 0, 2, 16, 16),
+            Block.box(14, 0, 0, 16, 2, 16),
+            Block.box(14, 14, 0, 16, 16, 16)
+    );
+    private static final VoxelShape DRIVE_SOUTH = Shapes.or(
+            CORNER_RAILS,
+            Block.box(0, 0, 0, 2, 16, 2),
+            Block.box(14, 0, 0, 16, 16, 2),
+            Block.box(2, 0, 0, 14, 2, 2),
+            Block.box(2, 14, 0, 14, 16, 2),
+            Block.box(2, 1, 2, 14, 15, 12)
+    );
+    private static final VoxelShape CHAMBER_SOUTH = Shapes.or(
+            CORNER_RAILS,
+            Block.box(0, 0, 14, 2, 16, 16),
+            Block.box(14, 0, 14, 16, 16, 16),
+            Block.box(2, 0, 14, 14, 2, 16),
+            Block.box(2, 14, 14, 14, 16, 16)
+    );
+    private static final VoxelShaper DRIVE_SHAPES =
+            VoxelShaper.forDirectional(DRIVE_SOUTH, Direction.SOUTH);
+    private static final VoxelShaper CHAMBER_SHAPES =
+            VoxelShaper.forDirectional(CHAMBER_SOUTH, Direction.SOUTH);
+
+    public static VoxelShape chamberShape(Direction facing) {
+        return CHAMBER_SHAPES.get(facing);
+    }
+
+    private static boolean matchesDrive(BlockState drive, Direction facing) {
+        return drive.is(ModBlocks.CLOAKING_CORE.get())
+                && !drive.getValue(CHAMBER)
+                && drive.getValue(FACING) == facing;
+    }
+
+    private static boolean matchesChamber(BlockState chamber, Direction facing) {
+        return (chamber.is(ModBlocks.CLOAKING_CORE_CHAMBER.get())
+                    && chamber.getValue(CloakingCoreChamberBlock.FACING) == facing)
+                || (chamber.is(ModBlocks.CLOAKING_CORE.get())
+                    && chamber.getValue(CHAMBER)
+                    && chamber.getValue(FACING) == facing);
+    }
 
     public CloakingCoreBlock(Properties properties) {
         super(properties);
@@ -142,7 +199,17 @@ public class CloakingCoreBlock extends KineticBlock
         BlockPos drivePos = context.getClickedPos();
         BlockPos chamberPos = drivePos.relative(facing);
 
-        if (!context.getLevel().getBlockState(chamberPos).isAir()) {
+        if (context.getLevel().isOutsideBuildHeight(chamberPos)
+                || !context.getLevel().getWorldBorder().isWithinBounds(chamberPos)
+                || !context.getLevel().getBlockState(chamberPos).canBeReplaced()) {
+            return null;
+        }
+
+        BlockState companion = ModBlocks.CLOAKING_CORE_CHAMBER.get()
+                .defaultBlockState()
+                .setValue(CloakingCoreChamberBlock.FACING, facing);
+        if (!context.getLevel().isUnobstructed(
+                companion, chamberPos, CollisionContext.empty())) {
             return null;
         }
 
@@ -170,16 +237,21 @@ public class CloakingCoreBlock extends KineticBlock
         Direction facing = state.getValue(FACING);
         BlockPos chamberPos = pos.relative(facing);
 
-        if (!level.getBlockState(chamberPos).isAir()) {
-            level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+        BlockState current = level.getBlockState(chamberPos);
+        if (!current.canBeReplaced()) {
+            // The destination was occupied after our placement precheck.
+            // Never leave a half-built kinetic machine behind.
+            level.destroyBlock(pos, true);
             return;
         }
 
-        BlockState chamberState = defaultBlockState()
-                .setValue(FACING, facing)
-                .setValue(CHAMBER, true);
+        BlockState chamberState = ModBlocks.CLOAKING_CORE_CHAMBER.get()
+                .defaultBlockState()
+                .setValue(CloakingCoreChamberBlock.FACING, facing);
 
-        level.setBlock(chamberPos, chamberState, Block.UPDATE_ALL);
+        if (!level.setBlock(chamberPos, chamberState, Block.UPDATE_ALL)) {
+            level.destroyBlock(pos, true);
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -201,18 +273,11 @@ public class CloakingCoreBlock extends KineticBlock
                 : pos.relative(facing);
     }
 
-    private boolean isMatchingOtherHalf(
-            BlockState state,
-            BlockState otherState
-    ) {
-        if (!otherState.is(this)
-                || !otherState.hasProperty(FACING)
-                || !otherState.hasProperty(CHAMBER)) {
-            return false;
-        }
-
-        return otherState.getValue(FACING) == state.getValue(FACING)
-                && otherState.getValue(CHAMBER) != state.getValue(CHAMBER);
+    private boolean isMatchingOtherHalf(BlockState state, BlockState otherState) {
+        Direction facing = state.getValue(FACING);
+        return state.getValue(CHAMBER)
+                ? matchesDrive(otherState, facing)
+                : matchesChamber(otherState, facing);
     }
 
     // ---------------------------------------------------------------------
@@ -227,28 +292,54 @@ public class CloakingCoreBlock extends KineticBlock
             BlockState newState,
             boolean movedByPiston
     ) {
-        if (!state.is(newState.getBlock()) && !REMOVING_OTHER_HALF.get()) {
+        boolean pairingChanged = !newState.is(this)
+                || (newState.hasProperty(CHAMBER)
+                    && (state.getValue(CHAMBER) != newState.getValue(CHAMBER)
+                        || state.getValue(FACING) != newState.getValue(FACING)));
+
+        if (!level.isClientSide && pairingChanged && !REMOVING_OTHER_HALF.get()) {
             BlockPos otherPos = getOtherHalfPos(pos, state);
             BlockState otherState = level.getBlockState(otherPos);
 
             if (isMatchingOtherHalf(state, otherState)) {
                 REMOVING_OTHER_HALF.set(true);
-
                 try {
-                    level.setBlock(
-                            otherPos,
-                            Blocks.AIR.defaultBlockState(),
-                            Block.UPDATE_ALL
-                    );
+                    if (state.getValue(CHAMBER)) {
+                        // A pre-upgrade, legacy chamber was itself a
+                        // CloakingCoreBlock. Break its source for one item.
+                        level.destroyBlock(otherPos, true);
+                    } else {
+                        // The drive owns the only loot drop; its companion
+                        // is a structural placeholder and drops nothing.
+                        level.setBlock(
+                                otherPos, Blocks.AIR.defaultBlockState(),
+                                Block.UPDATE_ALL
+                        );
+                    }
                 } finally {
                     REMOVING_OTHER_HALF.set(false);
                 }
             }
         }
 
-        // KineticBlock.onRemove() performs Create's SmartBlockEntity cleanup
-        // and detaches the drive half from the kinetic network.
+        // Keep Create's kinetic network cleanup on the drive block.
         super.onRemove(state, level, pos, newState, movedByPiston);
+    }
+
+    @Override
+    public BlockState playerWillDestroy(Level level, BlockPos pos, BlockState state, Player player) {
+        if (!level.isClientSide && player.isCreative() && state.getValue(CHAMBER)) {
+            BlockPos drivePos = getDrivePos(pos, state);
+            if (matchesDrive(level.getBlockState(drivePos), state.getValue(FACING))) {
+                REMOVING_OTHER_HALF.set(true);
+                try {
+                    level.destroyBlock(drivePos, false);
+                } finally {
+                    REMOVING_OTHER_HALF.set(false);
+                }
+            }
+        }
+        return super.playerWillDestroy(level, pos, state, player);
     }
 
     // ---------------------------------------------------------------------
@@ -316,6 +407,94 @@ public class CloakingCoreBlock extends KineticBlock
     }
 
     // ---------------------------------------------------------------------
+    // TWO-BLOCK CONSISTENCY (CREATE CONNECTED BRIDGE PATTERN)
+    // ---------------------------------------------------------------------
+
+    @Override
+    public void onPlace(
+            BlockState state, Level level, BlockPos pos,
+            BlockState oldState, boolean movedByPiston
+    ) {
+        super.onPlace(state, level, pos, oldState, movedByPiston);
+        if (!level.isClientSide && !oldState.equals(state)) {
+            level.scheduleTick(pos, this, 2);
+        }
+    }
+
+    @Override
+    public BlockState updateShape(
+            BlockState state, Direction direction, BlockState neighbor,
+            LevelAccessor level, BlockPos pos, BlockPos neighborPos
+    ) {
+        Direction linkedSide = state.getValue(CHAMBER)
+                ? state.getValue(FACING).getOpposite()
+                : state.getValue(FACING);
+
+        if (!level.isClientSide() && direction == linkedSide) {
+            // Schedule instead of deleting immediately. BlockItem places the
+            // drive and its frame in two writes, and neighbour updates can
+            // arrive while only one half exists.
+            level.scheduleTick(pos, this, 2);
+        }
+        return super.updateShape(state, direction, neighbor, level, pos, neighborPos);
+    }
+
+    @Override
+    public void tick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random) {
+        BlockPos otherPos = getOtherHalfPos(pos, state);
+        if (!level.isLoaded(otherPos)) {
+            level.scheduleTick(pos, this, 20);
+            return;
+        }
+
+        BlockState other = level.getBlockState(otherPos);
+        if (state.getValue(CHAMBER)) {
+            if (!matchesDrive(other, state.getValue(FACING))) {
+                level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+                return;
+            }
+
+            // Existing saves may contain the old chamber=true state. Convert
+            // it to the inert companion without removing its kinetic drive.
+            REMOVING_OTHER_HALF.set(true);
+            try {
+                level.setBlock(pos, ModBlocks.CLOAKING_CORE_CHAMBER.get()
+                        .defaultBlockState()
+                        .setValue(CloakingCoreChamberBlock.FACING, state.getValue(FACING)),
+                        Block.UPDATE_ALL);
+            } finally {
+                REMOVING_OTHER_HALF.set(false);
+            }
+            return;
+        }
+
+        if (matchesChamber(other, state.getValue(FACING))) {
+            return;
+        }
+
+        // Restore a missing half only when its position is actually free.
+        // An obstructed destination breaks the entire machine instead of
+        // leaving a half-core still connected to Create's kinetic network.
+        if (level.isOutsideBuildHeight(otherPos)
+                || !level.getWorldBorder().isWithinBounds(otherPos)
+                || !other.canBeReplaced()) {
+            level.destroyBlock(pos, true);
+            return;
+        }
+
+        level.setBlock(otherPos, ModBlocks.CLOAKING_CORE_CHAMBER.get()
+                .defaultBlockState()
+                .setValue(CloakingCoreChamberBlock.FACING, state.getValue(FACING)),
+                Block.UPDATE_ALL);
+    }
+
+    @Override
+    public InteractionResult onWrenched(BlockState state, UseOnContext context) {
+        // Rotating the kinetic half independently would orphan its companion.
+        return InteractionResult.PASS;
+    }
+
+    // ---------------------------------------------------------------------
     // BLOCK ENTITY
     // ---------------------------------------------------------------------
 
@@ -348,6 +527,16 @@ public class CloakingCoreBlock extends KineticBlock
     // ---------------------------------------------------------------------
     // RENDERING
     // ---------------------------------------------------------------------
+
+    @Override
+    protected VoxelShape getShape(
+            BlockState state, BlockGetter level, BlockPos pos, CollisionContext ctx
+    ) {
+        Direction facing = state.getValue(FACING);
+        return state.getValue(CHAMBER)
+                ? chamberShape(facing)
+                : DRIVE_SHAPES.get(facing);
+    }
 
     @Override
     protected RenderShape getRenderShape(BlockState state) {

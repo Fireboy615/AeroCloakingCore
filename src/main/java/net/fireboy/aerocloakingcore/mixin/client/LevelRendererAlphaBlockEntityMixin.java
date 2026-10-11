@@ -6,6 +6,7 @@ import net.fireboy.aerocloakingcore.client.RopeCloakRenderQueue;
 
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.LightTexture;
@@ -52,8 +53,27 @@ public abstract class LevelRendererAlphaBlockEntityMixin {
             Matrix4f projectionMatrix,
             CallbackInfo ci
     ) {
-        BlockEntityCloakRenderQueue.renderQueued();
-        RopeCloakRenderQueue.renderQueued();
-        ParticleCloakRenderQueue.renderQueued(lightTexture);
+        var profiler = Minecraft.getInstance().getProfiler();
+
+        profiler.push("aero_block_entities");
+        try {
+            BlockEntityCloakRenderQueue.renderQueued();
+        } finally {
+            profiler.pop();
+        }
+
+        profiler.push("aero_rope_replay");
+        try {
+            RopeCloakRenderQueue.renderQueued();
+        } finally {
+            profiler.pop();
+        }
+
+        profiler.push("aero_particle_replay");
+        try {
+            ParticleCloakRenderQueue.renderQueued(lightTexture);
+        } finally {
+            profiler.pop();
+        }
     }
 }
