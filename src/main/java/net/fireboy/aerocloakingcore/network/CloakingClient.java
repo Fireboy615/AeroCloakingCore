@@ -314,15 +314,21 @@ public final class CloakingClient {
                 } else {
                     setTargetStrength(id, 0.0F);
                 }
-                if (getCloakStrength(id) > 0.001F) {
-                    UUID leavingGroup = GROUP_IDS.getOrDefault(id, id);
-                    incomingGroups.computeIfAbsent(
-                            leavingGroup, ignored -> ConcurrentHashMap.newKeySet()
-                    ).add(id);
-                } else {
+                // A departing sublevel can retain its rendering settings
+                // while its own fade-out finishes, but must NOT be treated as
+                // still belonging to the host's physical cloak group.
+                // Keeping it in incomingGroups allowed its distant geometry
+                // to reveal the parent ship through proximity checks.
+                if (getCloakStrength(id) <= 0.001F) {
                     GROUP_IDS.remove(id);
                 }
             }
+        }
+
+        // Proximity distance results depend on the live member set. A split
+        // must invalidate them immediately, not only when the cache expires.
+        if (!GROUP_MEMBERS.equals(incomingGroups)) {
+            BLOCK_DISTANCE_CACHE.clear();
         }
 
         SERVER_SUBLEVELS.clear();
@@ -596,8 +602,12 @@ public final class CloakingClient {
             SubLevel viewerSubLevel,
             long now
     ) {
+        // Only an actively cloaked sublevel can reveal its cloak group to
+        // riders. Detached children can retain old fade-out metadata, but
+        // standing aboard them must not reveal a distant former parent.
         UUID currentViewerSubLevelId =
                 viewerSubLevel != null
+                        && SERVER_SUBLEVELS.contains(viewerSubLevel.getUniqueId())
                         ? visibilityKey(viewerSubLevel.getUniqueId())
                         : null;
 
@@ -1266,7 +1276,12 @@ public final class CloakingClient {
     }
 
     private static UUID visibilityKey(UUID subLevelId) {
-        return GROUP_IDS.getOrDefault(subLevelId, subLevelId);
+        // GROUP_IDS deliberately survives briefly for a departing sublevel's
+        // visual fade. Logical group membership does not: only IDs in the
+        // latest authoritative server snapshot may affect the former host.
+        return SERVER_SUBLEVELS.contains(subLevelId)
+                ? GROUP_IDS.getOrDefault(subLevelId, subLevelId)
+                : subLevelId;
     }
 
     private static double distanceToBounds(
