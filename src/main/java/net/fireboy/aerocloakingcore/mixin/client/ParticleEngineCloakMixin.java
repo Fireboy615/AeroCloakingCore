@@ -1,10 +1,8 @@
 package net.fireboy.aerocloakingcore.mixin.client;
 
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.BufferUploader;
 import com.mojang.blaze3d.vertex.MeshData;
-import com.mojang.blaze3d.vertex.Tesselator;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 
 import dev.ryanhcode.sable.Sable;
@@ -28,7 +26,6 @@ import net.minecraft.client.particle.ParticleRenderType;
 import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.culling.Frustum;
-import net.minecraft.client.renderer.texture.TextureManager;
 
 import org.lwjgl.opengl.GL11C;
 import org.lwjgl.opengl.GL14C;
@@ -161,25 +158,26 @@ public abstract class ParticleEngineCloakMixin {
     }
 
 
-    /** Reset per-batch state without changing Minecraft's batch order. */
-    @Redirect(
+    /**
+     * Reset once per particle pass, independently of ParticleRenderType.begin.
+     * Recolor Tablet redirects that same begin invocation to reset its own
+     * state. Hooking it with @Redirect here prevented both mods from loading.
+     */
+    @Inject(
             method = "render(Lnet/minecraft/client/renderer/LightTexture;Lnet/minecraft/client/Camera;FLnet/minecraft/client/renderer/culling/Frustum;Ljava/util/function/Predicate;)V",
-            require = 1,
-            at = @At(
-                    value = "INVOKE",
-                    target = "Lnet/minecraft/client/particle/ParticleRenderType;begin(Lcom/mojang/blaze3d/vertex/Tesselator;Lnet/minecraft/client/renderer/texture/TextureManager;)Lcom/mojang/blaze3d/vertex/BufferBuilder;"
-            )
+            at = @At("HEAD")
     )
-    private BufferBuilder aerocloakingcore$beginParticleBatch(
-            ParticleRenderType renderType,
-            Tesselator tesselator,
-            TextureManager textureManager
+    private void aerocloakingcore$resetParticlePass(
+            LightTexture lightTexture,
+            Camera camera,
+            float partialTick,
+            Frustum frustum,
+            Predicate<Particle> particleFilter,
+            CallbackInfo ci
     ) {
-        aerocloakingcore$currentRenderType = renderType;
+        aerocloakingcore$currentRenderType = null;
         aerocloakingcore$currentBatchHasEncodedCloak = false;
         aerocloakingcore$currentBatchNeedsBlend = false;
-
-        return renderType.begin(tesselator, textureManager);
     }
 
 
@@ -203,6 +201,16 @@ public abstract class ParticleEngineCloakMixin {
             Camera camera,
             float partialTick
     ) {
+        // ParticleEngine groups particles by their render type. Recover the
+        // active sheet here rather than redirecting ParticleRenderType.begin,
+        // which Recolor Tablet also redirects.
+        ParticleRenderType renderType = particle.getRenderType();
+        if (aerocloakingcore$currentRenderType != renderType) {
+            aerocloakingcore$currentRenderType = renderType;
+            aerocloakingcore$currentBatchHasEncodedCloak = false;
+            aerocloakingcore$currentBatchNeedsBlend = false;
+        }
+
         ClientSubLevel origin = aerocloakingcore$getParticleOrigin(particle);
 
         if (origin == null) {
